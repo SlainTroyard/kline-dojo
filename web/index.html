@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>K线道场 KLineDojo · 盘感训练 + 指数看板</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <span class="brand-mini">🥋 K线道场</span>
+  <button id="nav-train" class="nav-btn active">训练</button>
+  <button id="nav-view" class="nav-btn">指数看板</button>
+  <span class="spacer"></span>
+  <select id="theme-sel" title="界面主题"></select>
+</nav>
+
+<div id="app-train">
+
+<!-- ======================== 开始页 ======================== -->
+<section id="screen-start" class="screen">
+  <header class="brand">
+    <h1>🥋 K线道场</h1>
+    <p class="sub">KLineDojo · 真实历史行情 双盲回放 · 零风险练盘感</p>
+  </header>
+
+  <div class="stats-row">
+    <div class="stats-bar" id="stats-bar" style="flex:1">加载战绩中…</div>
+    <button id="btn-mkt" class="ghost" title="baostock 增量更新行情（含新股），后台执行">⟳ 更新行情</button>
+  </div>
+
+  <h2 class="sec-title">选择训练品类</h2>
+  <div class="cards cards-5">
+    <div class="card selected" data-cat="stock">
+      <div class="cat">A股个股</div>
+      <div class="desc">全市场 5600+ 只随机抽股<br>随机时间窗 · 双盲回放</div>
+    </div>
+    <div class="card" data-cat="limit">
+      <div class="cat">涨停起爆</div>
+      <div class="desc">历史末端涨停日锁定<br>次日起应对 · 练打板跟进</div>
+    </div>
+    <div class="card" data-cat="etf">
+      <div class="cat">ETF 基金</div>
+      <div class="desc">2900+ 只场内基金<br>随机回放 · 无印花税</div>
+    </div>
+    <div class="card" data-cat="index">
+      <div class="cat">指数</div>
+      <div class="desc">18 个 A股/港美指数<br>练大盘节奏 · 无涨跌停</div>
+    </div>
+    <div class="card" data-cat="custom">
+      <div class="cat">自选</div>
+      <div class="desc">搜索指定标的复盘<br>可多个随机抽一</div>
+    </div>
+  </div>
+
+  <!-- 指数品类：选具体指数 -->
+  <div id="panel-index" class="cat-panel hidden">
+    <label>训练指数
+      <select id="p-index"><option value="">随机（18 个指数）</option></select>
+    </label>
+  </div>
+
+  <!-- 自选品类：搜索 + 自选清单 -->
+  <div id="panel-custom" class="cat-panel hidden">
+    <div class="custom-search">
+      <input id="p-search" type="text" placeholder="输入代码或名称搜索，如：600519 / 茅台 / 中际" autocomplete="off">
+      <div id="search-drop" class="search-drop hidden"></div>
+    </div>
+    <div class="chips-row"><span class="chips-label">本局标的</span><div id="sel-chips" class="chips"></div></div>
+    <div class="chips-row"><span class="chips-label">我的自选</span><div id="watch-list" class="chips"></div></div>
+    <p class="mini-tip">搜索点选自动加入自选；本局可多选（服务端随机抽一）。自选是"半盲复盘"：你已知道标的，但日期轴仍隐藏。</p>
+  </div>
+
+  <h2 class="sec-title">训练参数</h2>
+  <div class="params">
+    <label>初始资金(元)<input id="p-capital" type="number" step="10000" min="10000" value="100000"></label>
+    <label>可见历史(根)<input id="p-history" type="number" step="10" min="40" max="250" value="120"></label>
+    <label>训练推进(根)<input id="p-forward" type="number" step="10" min="40" max="250" value="120"></label>
+    <label>起始年份<input id="p-year-from" type="number" min="1993" max="2026" value="2016"></label>
+    <label>结束年份<input id="p-year-to" type="number" min="1993" max="2026" value="2025"></label>
+    <label>上市满(年)<input id="p-list-years" type="number" step="0.5" min="0" max="20" value="1"></label>
+    <label class="chk"><input id="p-exclude-st" type="checkbox" checked> 剔除 ST / 退市整理</label>
+  </div>
+  <p class="mini-tip params-tip">起始/结束年份用于随机抽窗；若指定了下面的起止日期则改用定窗。</p>
+
+  <div class="params dates">
+    <label>训练起始日<input id="p-date-from" type="date"></label>
+    <label>训练结束日<input id="p-date-to" type="date"></label>
+    <span class="mini-tip-inline">留空 = 随机抽窗；指定后：该区间为<b>训练期</b>，前置历史自动向前取，结束日留空则到数据末尾</span>
+  </div>
+
+  <details class="adv">
+    <summary>高级设置：费率与成交模式</summary>
+    <div class="params adv-body">
+      <label>佣金(万)<input id="p-comm" type="number" step="0.1" min="0" max="100" value="1"></label>
+      <label>最低佣金(元)<input id="p-comm-min" type="number" step="0.5" min="0" max="50" value="5"></label>
+      <label>印花税(万)<input id="p-stamp" type="number" step="0.5" min="0" max="100" value="5"></label>
+      <label>过户费(万)<input id="p-transfer" type="number" step="0.01" min="0" max="10" value="0.1"></label>
+      <span class="fill-mode">
+        成交模式
+        <label class="radio"><input type="radio" name="p-fill" value="close" checked> 当根收盘</label>
+        <label class="radio"><input type="radio" name="p-fill" value="next_open"> 次日开盘</label>
+      </span>
+    </div>
+    <p class="mini-tip">印花税/过户费仅个股收取（ETF 与指数只收佣金）；成交价见右下规则说明。</p>
+  </details>
+
+  <button id="btn-start" class="primary big">开始训练</button>
+  <p class="tips">快捷键：<b>空格/→</b> 下一根 · <b>B</b> 买入 · <b>S</b> 卖出 · <b>F</b> 结束 · <b>P</b> 自动播放</p>
+  <p class="tips dim" id="rules-tip">规则：T+1 · 涨跌停拒单 · 佣金万1(最低5元) · 印花税卖出万5 · 以当根收盘价撮合</p>
+</section>
+
+<!-- ======================== 训练页 ======================== -->
+<section id="screen-train" class="screen hidden">
+  <div class="train-top">
+    <span class="badge" id="cat-badge">个股</span>
+    <span class="progress">第 <b id="prog-now">1</b> / <span id="prog-total">120</span> 根</span>
+    <div class="hud">
+      <span>总权益 <b id="h-equity">-</b></span>
+      <span>现金 <b id="h-cash">-</b></span>
+      <span>持仓 <b id="h-pos">-</b></span>
+      <span>浮动盈亏 <b id="h-pnl">-</b></span>
+      <span>当根 <b id="h-chg">-</b></span>
+      <span id="h-limit-wrap">涨停 <b id="h-up">-</b> / 跌停 <b id="h-down">-</b></span>
+      <span id="h-pending-wrap" class="hidden">挂单 <b id="h-pending">-</b></span>
+    </div>
+  </div>
+
+  <div class="view-toolbar train-toolbar">
+    <span class="tgroup" id="train-period-group">
+      <button data-tp="D" class="tg-btn on">日K</button>
+      <button data-tp="W" class="tg-btn">周K</button>
+      <button data-tp="M" class="tg-btn">月K</button>
+      <button data-tp="Y" class="tg-btn">年K</button>
+    </span>
+    <span class="tgroup">
+      <button data-tt="ma" class="tg-btn on">MA</button>
+      <button data-tt="boll" class="tg-btn">BOLL</button>
+      <button data-tt="macd" class="tg-btn on">MACD</button>
+      <button data-tt="kdj" class="tg-btn">KDJ</button>
+      <button data-tt="vol" class="tg-btn on">VOL</button>
+      <button data-tt="chan" class="tg-btn">缠论</button>
+    </span>
+    <span class="tgroup">
+      <button data-tdraw="trend" class="tg-btn" title="点击图上两点画趋势线（本局有效）">╱ 趋势线</button>
+      <button data-tdraw="hline" class="tg-btn" title="点击图上画水平线（本局有效）">— 水平线</button>
+      <button data-tdraw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+      <button id="train-clear-draw" class="tg-btn">清空</button>
+    </span>
+  </div>
+
+  <div class="chart-wrap train-chart-wrap" id="train-chart-wrap"><div id="chart"></div></div>
+  <div class="train-controls">
+    <button id="btn-next" class="primary">下一根 ⏭</button>
+    <button id="btn-play">自动 ▶</button>
+    <select id="speed" title="播放速度">
+      <option value="1500">0.5x</option>
+      <option value="800" selected>1x</option>
+      <option value="400">2x</option>
+      <option value="200">4x</option>
+      <option value="100">8x</option>
+    </select>
+    <span class="spacer"></span>
+    <button id="btn-buy" class="up">买入 B</button>
+    <button id="btn-sell" class="down">卖出 S</button>
+    <span class="spacer"></span>
+    <button id="btn-finish" class="ghost">结束训练 F</button>
+  </div>
+</section>
+
+<!-- ======================== 结果页 ======================== -->
+<section id="screen-result" class="screen hidden">
+  <h2 class="sec-title">训练结算</h2>
+  <div class="result-grid">
+    <div class="result-stats" id="result-stats"></div>
+    <div class="result-trades">
+      <h3>交易明细</h3>
+      <div class="table-wrap"><table id="trades-table"></table></div>
+    </div>
+  </div>
+  <div id="reveal-block" class="hidden">
+    <div class="identity" id="identity"></div>
+    <div class="chart-wrap small"><div id="reveal-chart"></div></div>
+  </div>
+  <div class="result-btns">
+    <button id="btn-reveal" class="primary">揭晓答案 🔍</button>
+    <button id="btn-again">再来一局 ↻</button>
+    <button id="btn-home" class="ghost">返回首页</button>
+  </div>
+</section>
+
+<!-- ======================== 买卖弹窗 ======================== -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="modal-title">买入</h3>
+    <div id="modal-info" class="modal-info"></div>
+    <div class="pct-btns" id="pct-btns"></div>
+    <label class="shares-label">数量(股/份)
+      <input id="modal-shares" type="number" min="0" step="100">
+    </label>
+    <div id="modal-est" class="modal-est"></div>
+    <div class="modal-btns">
+      <button id="modal-ok" class="primary">确 定</button>
+      <button id="modal-cancel" class="ghost">取 消</button>
+    </div>
+  </div>
+</div>
+
+</div><!-- /app-train -->
+
+<!-- ======================== 指数看板 ======================== -->
+<section id="screen-view" class="screen hidden">
+  <div class="view-layout">
+    <aside class="view-side">
+      <input id="view-search" type="text" placeholder="搜索指数…">
+      <div id="view-list" class="view-list"></div>
+      <button id="view-refresh" class="ghost" style="width:100%;margin-top:8px;">⟳ 同步数据</button>
+    </aside>
+    <div class="view-main">
+      <div class="view-topbar">
+        <span id="view-title" class="view-title">选择一个指数</span>
+      </div>
+      <div class="view-toolbar">
+        <span class="tgroup" id="period-group">
+          <button data-period="D" class="tg-btn on">日K</button>
+          <button data-period="W" class="tg-btn">周K</button>
+          <button data-period="M" class="tg-btn">月K</button>
+          <button data-period="Y" class="tg-btn">年K</button>
+        </span>
+        <span class="tgroup">
+          <button data-tg="ma" class="tg-btn on">MA</button>
+          <button data-tg="boll" class="tg-btn">BOLL</button>
+          <button data-tg="macd" class="tg-btn on">MACD</button>
+          <button data-tg="kdj" class="tg-btn">KDJ</button>
+          <button data-tg="vol" class="tg-btn on">VOL</button>
+          <button data-tg="chan" class="tg-btn">缠论</button>
+        </span>
+        <span class="tgroup">
+          <button data-draw="trend" class="tg-btn" title="点击图上两点画趋势线">╱ 趋势线</button>
+          <button data-draw="hline" class="tg-btn" title="点击图上画水平线">— 水平线</button>
+          <button data-draw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+          <button id="view-clear-draw" class="tg-btn">清空</button>
+        </span>
+      </div>
+      <div class="chart-wrap view-chart-wrap" id="view-chart-wrap">
+        <div id="view-chart"></div>
+        <div id="view-legend" class="view-legend"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div id="toast" class="hidden"></div>
+
+<script src="vendor/lightweight-charts.js"></script>
+<script src="theme.js"></script>
+<script src="ind.js"></script>
+<script src="draw.js"></script>
+<script src="view.js"></script>
+<script src="app.js"></script>
+<script>View.init();</script>
+</body>
+</html>

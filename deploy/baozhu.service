@@ -1,0 +1,18 @@
+# 爆竹训练营 常驻服务（systemd user unit）
+# 安装：
+#   cp baozhu.service baozhu-refresh.service baozhu-refresh.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now baozhu.service baozhu-refresh.timer
+[Unit]
+Description=KLineDojo · K线盘感训练 + 指数看板
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/kline-dojo
+ExecStart=/path/to/kline-dojo/.venv/bin/python server.py --port 8870
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

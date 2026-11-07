@@ -1,0 +1,8 @@
+# 每日指数增量刷新（astock 01:00 更新后跑）
+[Unit]
+Description=KLineDojo index daily refresh
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/kline-dojo
+ExecStart=/path/to/kline-dojo/.venv/bin/python bz_index.py

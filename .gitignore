@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+
+# 独立 venv（baostock 更新器用，见 README）
+.venv/
+
+# 运行产物 / 日志
+server.log
+data/update.log
+data/extend.log
+data/.update.lock
+
+# 个人训练成绩（含本机标的偏好，不入库）
+data/results.jsonl
+
+# 行情自有副本（~1.2GB，由 astock 副本导入 + baostock 维护再生，不入库）
+data/market/
+
+# 指数缓存：体积 ~4MB、可再生（首次打开自动回填）。
+# 想让克隆者免于等待就注释掉下一行
+data/index/*.parquet
+
+# 本地工具
+.zcode/
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store

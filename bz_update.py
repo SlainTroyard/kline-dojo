@@ -1,0 +1,820 @@
+#!/usr/bin/env python3
+"""行情更新器（baostock）——维护本项目自有数据副本 data/market/ 与指数缓存 data/index/。
+
+数据来源：baostock（免费无 token，适合开源场景）。在 tushare 历史副本的
+基础上做增量追加 + 新股/新 ETF 全量回补 + 2015 以前历史回补，绝不动 ../astock（红线只读）。
+
+schema（个股/ETF）：serving 10 列 + amount(成交额,元) + turnover_rate(换手率%)，
+个股额外带 is_st（0/1）列：
+  - 复权因子：baostock 除权事件表 backAdjustFactor（累计后复权因子，与 tushare
+    adj_factor 同量纲，实测逐位一致）→ 日频前向填充；写入时在重叠日做锚定对齐，
+    两源即使量纲漂移也不破坏比例（前复权只用比例）
+  - 涨跌停价：按板块规则计算（1996-12-16 起才有涨跌停；主板10%/ST5%（2026-07-06 起
+    ST 同 10%），创业板 2020-08-24 起 20%，科创板 20%，注册制新股前 5 日不设限，
+    新股限价置 NaN——训练层自动剔除含 NaN 窗口）；四舍五入到分
+  - 停牌日（tradestatus=0）丢弃，与 tushare 口径一致（缺口由窗口过滤处理）
+
+指数：A股 11 个指数日线同步追加到 data/index/*.parquet（与腾讯缓存同文件、
+append-only 合流：成交量按 股→手 除以 100，价格实测两源一致；海外指数仍走腾讯/Yahoo）。
+
+用法（用本项目 venv）：
+    .venv/bin/python bz_update.py --update                 # 增量 + 新股 + 指数
+    .venv/bin/python bz_update.py --update --codes 600519,300750
+    .venv/bin/python bz_update.py --backfill 301999        # 单标的全量回补
+    .venv/bin/python bz_update.py --extend-back            # 回补 2015 以前历史（约2小时）
+    .venv/bin/python bz_update.py --extend-back --codes 000001,600519
+    .venv/bin/python bz_update.py --validate --sample 30   # 与既有数据抽样比对
+"""
+from __future__ import annotations
+
+import argparse
+import random
+import sys
+import time
+from datetime import date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent
+MARKET = ROOT / "data" / "market"
+INDEX_DIR = ROOT / "data" / "index"
+LOCK = ROOT / "data" / ".update.lock"
+
+K_FIELDS = ("date,open,high,low,close,preclose,volume,amount,"
+            "tradestatus,pctChg,isST,turn")
+SERVING_COLS = ["date", "open", "high", "low", "close", "pre_close",
+                "volume", "amount", "turnover_rate",
+                "adj_factor", "up_limit", "down_limit"]
+
+# A股指数（baostock 代码 → 看板缓存 key；海外指数腾讯/Yahoo 自更新，不在此列）
+BAOSTOCK_INDEXES = {
+    "sh.000001": "sh000001", "sz.399001": "sz399001", "sh.000300": "sh000300",
+    "sh.000016": "sh000016", "sh.000905": "sh000905", "sh.000852": "sh000852",
+    "sh.000903": "sh000903", "sz.399006": "sz399006", "sh.000688": "sh000688",
+    "sh.000922": "sh000922", "sz.399303": "sz399303",
+}
+
+# 涨跌停规则切换日
+LIMIT_START = date(1996, 12, 16)      # A股涨跌停制度起点（此前无价格限制）
+CHINEXT_20PCT = date(2020, 8, 24)     # 创业板注册制改革（含 ST 一律 20%）
+MAINBOARD_REG = date(2023, 2, 17)     # 主板全面注册制（新股前5日不设限）
+MAIN_ST_10PCT = date(2026, 7, 6)      # 主板 ST 涨跌幅 5%→10%（据官方涨跌停价数据反推）
+STAR_LAUNCH = date(2019, 7, 22)       # 科创板开市
+
+
+def log(msg: str):
+    print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
+
+
+def bs_code(code: str) -> str:
+    """裸 6 位 → baostock 代码。"""
+    if code.startswith(("60", "68", "51", "56", "58")):
+        return "sh." + code
+    return "sz." + code
+
+
+def board_of(code: str) -> str:
+    if code.startswith(("688", "689")):
+        return "star"
+    if code.startswith("30"):
+        return "chinext"
+    return "main"
+
+
+def limit_prices(code: str, d: date, pre_close: float, is_st: int,
+                 seq: int) -> tuple[float, float]:
+    """涨跌停价（元，四舍五入到分）。seq=该股第几根 bar（0 起，含历史）。
+    无涨跌停约束的 bar 返回 (nan, nan)：1996-12-16 前无制度 / 主板旧规首日 /
+    注册制新股前 5 日。规则若再变（本函数的知识有限），用 --validate 比对即可发现。"""
+    if d < LIMIT_START:
+        return float("nan"), float("nan")
+    b = board_of(code)
+    if b == "star":
+        pct, no_limit_days = 0.20, 5
+    elif b == "chinext":
+        if d >= CHINEXT_20PCT:
+            pct, no_limit_days = 0.20, 5
+        else:
+            pct, no_limit_days = (0.05, 1) if is_st else (0.10, 1)
+    else:
+        if d >= MAIN_ST_10PCT:
+            pct = 0.10                       # 主板 ST 与普通股统一 10%
+        else:
+            pct = 0.05 if is_st else 0.10
+        if d >= MAINBOARD_REG:
+            no_limit_days = 5
+        else:
+            no_limit_days = 1
+    if seq < no_limit_days or not (pre_close > 0):
+        return float("nan"), float("nan")
+    p = Decimal(str(pre_close))
+    up = float((p * (1 + Decimal(str(pct)))).quantize(Decimal("0.01"), ROUND_HALF_UP))
+    dn = float((p * (1 - Decimal(str(pct)))).quantize(Decimal("0.01"), ROUND_HALF_UP))
+    return up, dn
+
+
+class Updater:
+    def __init__(self):
+        import baostock as bs
+        self.bs = bs
+
+    # ---------------- baostock 取数 ----------------
+
+    def _rows(self, rs) -> list[list]:
+        out = []
+        while rs.error_code == "0" and rs.next():
+            out.append(rs.get_row_data())
+        if rs.error_code != "0":
+            raise RuntimeError(f"baostock 错误 {rs.error_code}: {rs.error_msg}")
+        return out
+
+    def _relogin(self):
+        """网络错误后重连（baostock 长连接会被服务端掐断）。"""
+        try:
+            self.bs.logout()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1)
+        self.bs.login()
+
+    def _retry(self, fn, *a, attempts=3, **kw):
+        """网络瞬时错误退避重试（2s/6s/12s），末次前重连。"""
+        for i in range(attempts):
+            try:
+                return fn(*a, **kw)
+            except RuntimeError as e:
+                msg = str(e)
+                if ("网络" not in msg and "10002" not in msg) or i == attempts - 1:
+                    raise
+                time.sleep(2 + 4 * i)
+                self._relogin()
+        raise RuntimeError("unreachable")
+
+    def fetch_k(self, code: str, start: str, end: str) -> pd.DataFrame:
+        """不复权日线 → DataFrame（丢停牌/空行）。"""
+        def _do():
+            rs = self.bs.query_history_k_data_plus(
+                bs_code(code), K_FIELDS, start_date=start, end_date=end,
+                frequency="d", adjustflag="3")
+            return self._rows(rs)
+        rows = self._retry(_do)
+        rec = []
+        for r in rows:
+            if r[8] != "1":            # 停牌
+                continue
+            try:
+                rec.append({
+                    "date": r[0],
+                    "open": float(r[1]), "high": float(r[2]),
+                    "low": float(r[3]), "close": float(r[4]),
+                    "pre_close": float(r[5]),
+                    "volume": float(r[6] or 0),
+                    "amount": float(r[7] or 0),
+                    "is_st": int(float(r[10])) if r[10] not in ("", None) else 0,
+                    "turnover_rate": float(r[11]) if len(r) > 11 and r[11] not in ("", None) else float("nan"),
+                })
+            except (ValueError, IndexError):
+                continue
+        return pd.DataFrame(rec)
+
+    def fetch_factor_events(self, code: str) -> list[tuple[date, float]]:
+        """除权事件 [(operateDate, 累计复权因子)]，升序。
+        注意用 backAdjustFactor（累计后复权因子，绝对值与 tushare adj_factor 同量纲）；
+        adjustFactor 列是单次事件比例（如 1.3075），当作累计用会在多次分红时出错。"""
+        def _do():
+            rs = self.bs.query_adjust_factor(code=bs_code(code), start_date="1990-01-01",
+                                             end_date=date.today().isoformat())
+            return self._rows(rs), rs.fields
+        rows, f = self._retry(_do)
+        di = f.index("dividOperateDate")
+        fi = f.index("backAdjustFactor")
+        ev = []
+        for r in rows:
+            try:
+                ev.append((date.fromisoformat(r[di]), float(r[fi])))
+            except (ValueError, TypeError):
+                continue
+        ev.sort()
+        return ev
+
+    @staticmethod
+    def factor_at(events, d: date) -> float:
+        """d 日的累计复权因子（≤d 的最后一个事件，无则 1.0）。"""
+        v = 1.0
+        for ed, f in events:
+            if ed <= d:
+                v = f
+            else:
+                break
+        return v
+
+    # ---------------- 因子步长审计 ----------------
+
+    def check_factors(self, codes: list[str] | None = None) -> int:
+        """全库扫描：每个除权日检查 因子步长 == 昨收/除权基准。
+        只审 1996-12-16 之后（更早的 preclose 语义不可靠——0.5% 涨跌停年代
+        的基准重置会被误判为除权）。返回异常文件数。"""
+        inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
+        todo = codes or inst[inst["exchange"].isin(["SH", "SZ"])]["code"].tolist()
+        cutoff = pd.Timestamp(LIMIT_START)
+        bad_files = 0
+        for code in todo:
+            kind = "etfs" if str(inst[inst["code"] == code].iloc[0]["type"]) == "etf" else "stocks"
+            d = self.load_local(kind, code)
+            if not len(d):
+                continue
+            d = d[d["date"] >= cutoff].reset_index(drop=True)
+            bad = []
+            for i in range(1, len(d)):
+                pc, prev_c = float(d["pre_close"].iloc[i]), float(d["close"].iloc[i - 1])
+                f0, f1 = d["adj_factor"].iloc[i - 1], d["adj_factor"].iloc[i]
+                if not (pc > 0 and prev_c > 0 and pd.notna(f0) and pd.notna(f1) and f0 > 0):
+                    continue
+                if abs(pc / prev_c - 1) > 0.0005:
+                    exp_step = prev_c / pc
+                    act_step = float(f1) / float(f0)
+                    if abs(act_step / exp_step - 1) > 0.005:
+                        bad.append((str(d['date'].iloc[i].date()), round(exp_step, 4), round(act_step, 4)))
+            if bad:
+                bad_files += 1
+                log(f"  {code}: {len(bad)} 处步长异常 首处 {bad[0]}")
+        log(f"check-factors: {bad_files} 个文件存在异常（{len(todo)} 扫描）")
+        return bad_files
+
+    # ---------------- 本地读写 ----------------
+
+    @staticmethod
+    def load_local(kind: str, code: str) -> pd.DataFrame:
+        p = MARKET / "daily" / kind / f"{code}.parquet"
+        if not p.exists():
+            return pd.DataFrame(columns=SERVING_COLS)
+        df = pd.read_parquet(p)
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
+        return df
+
+    @staticmethod
+    def save_local(kind: str, code: str, df: pd.DataFrame):
+        p = MARKET / "daily" / kind / f"{code}.parquet"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(p, index=False)
+
+    # ---------------- 核心：单标的增量 ----------------
+
+    def latest_trade_day(self) -> date:
+        """baostock 交易日历 → 最近一个已收盘的交易日（无新交易日时整轮零 API 调用）。"""
+        d0 = date.today() - timedelta(days=20)
+        rs = self.bs.query_trade_dates(start_date=d0.isoformat(),
+                                       end_date=date.today().isoformat())
+        rows = self._rows(rs)
+        days = [date.fromisoformat(r[0]) for r in rows if r[1] == "1"]
+        return max(days) if days else date.today()
+
+    def update_code(self, code: str, kind: str, today: date,
+                    last_td: date | None = None) -> str:
+        """返回 'new N' / 'up-to-date' / 'skip'。
+        baostock 每次调用 3-8s（纯网络往返），故：
+          - 本地已到最近交易日 → 不发请求直接跳过
+          - 复权因子懒加载：pre_close 与昨收一致（无除权）时因子沿用末值，不拉事件表
+        """
+        local = self.load_local(kind, code)
+        if len(local):
+            last = local["date"].iloc[-1]
+            if getattr(last, "tzinfo", None) is not None:
+                last = last.tz_localize(None)
+            last_d = last.date() if hasattr(last, "date") else last
+            if last_td and last_d >= last_td:
+                return "skip"
+            start = (last_d + timedelta(days=1)).isoformat()
+            seq0 = len(local)          # 新行从第 seq0 根起
+            prev_close = float(local["close"].iloc[-1])
+            prev_factor = float(local["adj_factor"].iloc[-1]) \
+                if pd.notna(local["adj_factor"].iloc[-1]) else None
+        else:
+            start, seq0, prev_close, prev_factor = "2015-01-01", 0, None, None
+            ld = self.list_date_of(code)
+            if ld:
+                start = ld.isoformat()
+
+        k = self.fetch_k(code, start, today.isoformat())
+        if not len(k):
+            return "up-to-date"
+
+        # ---- 复权因子：除权检测（新首行 pre_close ≠ 本地昨收）----
+        first_pre = float(k["pre_close"].iloc[0])
+        exdiv = prev_close is None or prev_factor is None or \
+            abs(first_pre / prev_close - 1) > 0.0005
+        if exdiv:
+            events = self.fetch_factor_events(code)
+            ref_rows = local[local["adj_factor"].notna()] if len(local) else local
+            if len(ref_rows):
+                ref_d = ref_rows.iloc[-1]["date"]
+                ref_d = ref_d.date() if hasattr(ref_d, "date") else ref_d
+                scale = float(ref_rows.iloc[-1]["adj_factor"]) / self.factor_at(events, ref_d)
+            else:
+                scale = 1.0
+            factor_of = lambda d: self.factor_at(events, d) * scale  # noqa: E731
+        else:
+            factor_of = lambda d: prev_factor if prev_factor is not None else 1.0  # noqa: E731
+
+        dates = [date.fromisoformat(x) for x in k["date"]]
+        rows = []
+        for i, d in enumerate(dates):
+            if kind == "stocks":
+                up, dn = limit_prices(code, d, float(k["pre_close"].iloc[i]),
+                                      int(k["is_st"].iloc[i]), seq0 + i)
+            else:
+                up = dn = float("nan")
+            rows.append({
+                "date": pd.Timestamp(d), "open": k["open"].iloc[i],
+                "high": k["high"].iloc[i], "low": k["low"].iloc[i],
+                "close": k["close"].iloc[i], "pre_close": k["pre_close"].iloc[i],
+                "volume": k["volume"].iloc[i], "amount": k["amount"].iloc[i],
+                "turnover_rate": k["turnover_rate"].iloc[i],
+                "adj_factor": factor_of(d),
+                "up_limit": up, "down_limit": dn,
+                **({"is_st": int(k["is_st"].iloc[i])} if kind == "stocks" else {}),
+            })
+        new = pd.DataFrame(rows)
+        if len(local):
+            for c in new.columns:
+                if c not in local.columns:
+                    local[c] = float("nan") if c != "is_st" else 0
+            merged = pd.concat([local, new], ignore_index=True)
+            merged = merged.drop_duplicates(subset="date", keep="last")
+            merged = merged.sort_values("date").reset_index(drop=True)
+        else:
+            merged = new
+        self.save_local(kind, code, merged)
+        return f"new {len(new)}"
+
+    # ---------------- 2015 以前历史回补 ----------------
+
+    def extend_back_code(self, code: str, kind: str) -> str:
+        """把本地最早日期之前的历史（baostock 可回溯到 1990s）插到头部。
+        复权因子锚定本地首行对齐（与增量同一套比例机制，方向相反）。"""
+        local = self.load_local(kind, code)
+        if not len(local):
+            return "skip: 无本地数据（先 backfill）"
+        first = local["date"].iloc[0]
+        first_d = first.date() if hasattr(first, "date") else first
+        ld = self.list_date_of(code)
+        if ld and first_d <= ld + timedelta(days=14):
+            return "skip: 已到上市初"       # 幂等：重跑不发请求
+        k = self.fetch_k(code, "1990-01-01", (first_d - timedelta(days=1)).isoformat())
+        if not len(k):
+            return "up-to-date"
+        events = self.fetch_factor_events(code)
+        f_rows = local[local["adj_factor"].notna()]
+        if len(f_rows):
+            ref = f_rows.iloc[0]["date"]
+            ref_d = ref.date() if hasattr(ref, "date") else ref
+            scale = float(f_rows.iloc[0]["adj_factor"]) / self.factor_at(events, ref_d)
+        else:
+            scale = 1.0
+        rows = []
+        for i, dstr in enumerate(k["date"]):
+            d = date.fromisoformat(dstr)
+            if kind == "stocks":
+                up, dn = limit_prices(code, d, float(k["pre_close"].iloc[i]),
+                                      int(k["is_st"].iloc[i]), i)   # 回补段从 0 计 seq
+            else:
+                up = dn = float("nan")
+            rows.append({
+                "date": pd.Timestamp(d), "open": k["open"].iloc[i],
+                "high": k["high"].iloc[i], "low": k["low"].iloc[i],
+                "close": k["close"].iloc[i], "pre_close": k["pre_close"].iloc[i],
+                "volume": k["volume"].iloc[i], "amount": k["amount"].iloc[i],
+                "turnover_rate": k["turnover_rate"].iloc[i],
+                "adj_factor": self.factor_at(events, d) * scale,
+                "up_limit": up, "down_limit": dn,
+                **({"is_st": int(k["is_st"].iloc[i])} if kind == "stocks" else {}),
+            })
+        old_rows = pd.DataFrame(rows)
+        for c in old_rows.columns:
+            if c not in local.columns:
+                local[c] = float("nan") if c != "is_st" else 0
+        merged = pd.concat([old_rows, local], ignore_index=True)
+        merged = merged.drop_duplicates(subset="date", keep="last").sort_values("date")
+        merged = merged.reset_index(drop=True)
+        self.save_local(kind, code, merged)
+        return f"prepend {len(old_rows)}（→ {merged['date'].iloc[0].date()}）"
+
+    # ---------------- 指数合流（data/index，与腾讯缓存同文件） ----------------
+
+    def update_index(self, bsk: str, tk: str, today: date) -> str:
+        """baostock A股指数日线 → 追加到腾讯缓存 parquet（append-only）。
+        量纲：baostock 股 = 腾讯 手 × 100，写入前除以 100（价格两源实测一致）。"""
+        rs = self.bs.query_history_k_data_plus(
+            bsk, "date,open,high,low,close,volume", start_date="1990-01-01",
+            end_date=today.isoformat(), frequency="d", adjustflag="3")
+        rows = self._rows(rs)
+        rec = []
+        for r in rows:
+            try:
+                if not r[0] or "" in (r[1], r[2], r[3], r[4]):
+                    continue
+                rec.append({
+                    "date": r[0], "open": float(r[1]), "close": float(r[4]),
+                    "high": float(r[2]), "low": float(r[3]),
+                    "volume": (float(r[5]) if r[5] else 0.0) / 100.0,   # 股→手（腾讯口径）
+                })
+            except (ValueError, IndexError):
+                continue
+        if not rec:
+            return "无数据（该源无此指数，仍走腾讯）"
+        b = pd.DataFrame(rec)
+        p = INDEX_DIR / f"{tk}.parquet"
+        if p.exists():
+            t = pd.read_parquet(p)
+            last = t["date"].iloc[-1]
+            b = b[b["date"] > last]
+            if not len(b):
+                return "up-to-date"
+            merged = pd.concat([t, b], ignore_index=True)
+            merged = merged.drop_duplicates(subset="date", keep="first").sort_values("date")
+        else:
+            merged = b
+        INDEX_DIR.mkdir(parents=True, exist_ok=True)
+        merged.to_parquet(p, index=False)
+        return f"new {len(b)}（总 {len(merged)}）"
+
+    def list_date_of(self, code: str) -> date | None:
+        try:
+            inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
+            r = inst[inst["code"] == code]
+            if len(r) and pd.notna(r.iloc[0]["list_date"]):
+                v = r.iloc[0]["list_date"]
+                return v.date() if hasattr(v, "date") else date.fromisoformat(str(v)[:10])
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    # ---------------- 新股发现 ----------------
+
+    def discover_new(self) -> list[tuple[str, str, str, date, str]]:
+        """query_all_stock 找本地 instruments 里没有的沪深个股/ETF。
+        返回 [(code, name, type, list_date, kind)]。"""
+        d = date.today()
+        codes_today = None
+        for _ in range(7):                      # 回退找最近一个有数据的交易日
+            rs = self.bs.query_all_stock(day=d.isoformat())
+            rows = self._rows(rs)
+            if rows:
+                codes_today = rows
+                break
+            d = d - timedelta(days=1)
+        if not codes_today:
+            return []
+        inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
+        known = set(inst["code"])
+        out = []
+        for r in codes_today:
+            bs_c = r[0]
+            if not ("." in bs_c):
+                continue
+            mkt, bare = bs_c.split(".")
+            if mkt == "sh" and not bare.startswith(("60", "68", "51", "56", "58")):
+                continue
+            if mkt == "sz" and not bare.startswith(("00", "30", "15", "16", "18")):
+                continue
+            if bare in known:
+                continue
+            b = self.bs.query_stock_basic(code=bs_c)
+            info = self._rows(b)
+            if not info:
+                continue
+            # fields: code, codeName, ipoDate, outDate, type, status
+            _, name, ipo, out, typ, status = info[0]
+            if out or status != "1":
+                continue
+            kind = "etfs" if typ == "5" else "stocks"
+            if typ not in ("1", "5"):
+                continue
+            try:
+                ld = date.fromisoformat(ipo) if ipo else None
+            except ValueError:
+                ld = None
+            out.append((bare, name, typ, ld, kind))
+            known.add(bare)
+        return out
+
+    def register_new(self, code: str, name: str, typ: str, ld: date | None, kind: str):
+        """登记到 instruments/names，再回补全量。"""
+        inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
+        names = pd.read_parquet(MARKET / "names.parquet").astype({"code": str})
+        exch = "SH" if bs_code(code).startswith("sh.") else "SZ"
+        row = {"code": code, "name": name, "exchange": exch,
+               "list_date": pd.Timestamp(ld) if ld else pd.NaT,
+               "delist_date": pd.NaT, "status": "L",
+               "type": "etf" if kind == "etfs" else "stock"}
+        if not len(inst[inst["code"] == code]):
+            inst = pd.concat([inst, pd.DataFrame([row])], ignore_index=True)
+            inst.to_parquet(MARKET / "instruments.parquet", index=False)
+        if not len(names[names["code"] == code]):
+            nrow = {"code": code, "name": name,
+                    "start": pd.Timestamp(ld) if ld else pd.Timestamp("2015-01-01"),
+                    "end": pd.NaT, "reason": "baostock 新增"}
+            for c in ("start", "end"):
+                if c not in names.columns:
+                    names[c] = pd.NaT
+            names = pd.concat([names, pd.DataFrame([nrow])], ignore_index=True)
+            names.to_parquet(MARKET / "names.parquet", index=False)
+
+    # ---------------- 比对验证 ----------------
+
+    def validate(self, sample: int) -> int:
+        """抽样对比 baostock 新取数与既有 tushare 数据（重叠窗口 120 日）。"""
+        inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
+        pool = inst[(inst["type"] == "stock") & inst["exchange"].isin(["SH", "SZ"])]["code"].tolist()
+        rng = random.Random(42)
+        picks = rng.sample(pool, min(sample, len(pool)))
+        today = date.today()
+        bad = 0
+        for code in picks:
+            local = self.load_local("stocks", code)
+            if len(local) < 150:
+                continue
+            last = local["date"].iloc[-1]
+            last_d = last.date() if hasattr(last, "date") else last
+            start = (last_d - timedelta(days=200)).isoformat()
+            k = self.fetch_k(code, start, last_d.isoformat())
+            if not len(k):
+                log(f"  {code}: baostock 无重叠数据!")
+                bad += 1
+                continue
+            k["date"] = pd.to_datetime(k["date"])
+            m = local.merge(k, on="date", suffixes=("_t", "_b"))
+            m = m.tail(120)
+            if not len(m):
+                continue
+            dclose = (m["close_t"] - m["close_b"]).abs().max()
+            dvol = (m["volume_t"] - m["volume_b"]).abs().max() / max(1.0, m["volume_t"].median())
+            # 复权因子比例一致性（窗口首日为基准；两源绝对量纲可不同，比比例）
+            f_t = m["adj_factor"].astype(float)
+            if len(m) > 5 and f_t.notna().all():
+                ev = self.fetch_factor_events(code)
+                f_bs = pd.Series([self.factor_at(ev, d.date()) for d in m["date"]])
+                r_t = (f_t / f_t.iloc[0]).values
+                r_b = (f_bs / f_bs.iloc[0]).values
+                dfac = abs(r_t - r_b).max()
+            else:
+                dfac = -1.0
+            # 涨跌停（只对既有非 NaN 的行比对）
+            chk = m[m["up_limit"].notna()]
+            if len(chk) > 20:
+                up_ok = dn_ok = tot = 0
+                for _, r in chk.iterrows():
+                    d = r["date"].date() if hasattr(r["date"], "date") else r["date"]
+                    seq = int(local.index[local["date"] == r["date"]][0])
+                    u, dn2 = limit_prices(code, d, float(r["pre_close_b"]),
+                                          int(r["is_st"]) if "is_st" in r else 0, seq)
+                    tot += 1
+                    up_ok += int(abs(u - float(r["up_limit"])) < 0.011)
+                    dn_ok += int(abs(dn2 - float(r["down_limit"])) < 0.011)
+                lim = (up_ok + dn_ok) / (2 * tot)
+            else:
+                lim = -1.0
+            flag = ""
+            if dclose > 0.011 or dvol > 0.02 or (dfac > 0.002) or (lim >= 0 and lim < 0.98):
+                flag = "  <-- 不一致!"
+                bad += 1
+            log(f"  {code}: close差={dclose:.3f} 量差={dvol:.4f} 因子比差={dfac:.5f} "
+                f"涨跌停符合率={lim if lim < 0 else f'{lim*100:.1f}%'}{flag}")
+        log(f"validate: {bad} 只不一致 / {len(picks)} 抽样")
+        return bad
+
+
+# ------------------------------------------------------------------ main ----
+
+def acquire_lock() -> bool:
+    if LOCK.exists():
+        try:
+            pid = int(LOCK.read_text().strip() or 0)
+            alive = pid != 0 and Path(f"/proc/{pid}").exists()
+            if alive:
+                return False
+            log(f"清除残留锁（pid {pid} 不存在）")
+        except (OSError, ValueError):
+            pass
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    LOCK.write_text(str(__import__("os").getpid()))
+    return True
+
+
+def release_lock():
+    LOCK.unlink(missing_ok=True)
+
+
+# ---- 并行 worker（fork 进程，各自登录 baostock）----
+_W: dict = {}
+
+
+def _worker_init(last_td, today, mode="update"):
+    import baostock as _bs
+    _bs.login()
+    _W["up"] = Updater()
+    _W["last_td"] = last_td
+    _W["today"] = today
+    _W["mode"] = mode
+
+
+def _worker_update(item):
+    code, kind = item
+    try:
+        if _W["mode"] == "extend_back":
+            return code, _W["up"].extend_back_code(code, kind)
+        return code, _W["up"].update_code(code, kind, _W["today"], _W["last_td"])
+    except Exception as e:  # noqa: BLE001
+        return code, f"ERROR {type(e).__name__}: {e}"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--update", action="store_true", help="增量更新（含新股/指数）")
+    ap.add_argument("--codes", default="", help="仅更新这些代码（逗号分隔）")
+    ap.add_argument("--backfill", default="", help="单标的全量回补（可强行重拉）")
+    ap.add_argument("--extend-back", action="store_true",
+                    help="回补 2015 以前历史（baostock 可回溯至 1990s，约 2 小时）")
+    ap.add_argument("--check-factors", action="store_true",
+                    help="审计全库因子步长（除权日 因子步长==昨收/除权基准）")
+    ap.add_argument("--validate", action="store_true", help="抽样与既有数据比对")
+    ap.add_argument("--sample", type=int, default=30)
+    ap.add_argument("--workers", type=int, default=8, help="并行进程数（各自登录 baostock）")
+    args = ap.parse_args()
+
+    if not MARKET.exists():
+        sys.exit("未找到 data/market —— 请先从 astock 复制数据（见 README）")
+    if not acquire_lock():
+        sys.exit("已有更新任务在运行（data/.update.lock）")
+
+    import baostock as bs
+    lg = bs.login()
+    if lg.error_code != "0":
+        release_lock()
+        sys.exit(f"baostock 登录失败: {lg.error_msg}")
+
+    up = Updater()
+    today = date.today()
+    try:
+        if args.validate:
+            sys.exit(1 if up.validate(args.sample) else 0)
+
+        if args.check_factors:
+            want = None
+            if args.codes:
+                want = [c.strip().split(".")[0] for c in args.codes.split(",") if c.strip()]
+            sys.exit(0 if up.check_factors(want) == 0 else 1)
+
+        # ---- 2015 以前历史回补（并行 + 失败分轮重跑，并发逐轮减半）----
+        if args.extend_back:
+            import multiprocessing as mp
+            ctx = mp.get_context("fork")
+            inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
+            live = inst[(inst["status"].isin(["L"])) | inst["delist_date"].notna()]
+            live = live[live["exchange"].isin(["SH", "SZ"])]
+            if args.codes:
+                want = {c.strip().split(".")[0] for c in args.codes.split(",") if c.strip()}
+                todo = [(r["code"], "etfs" if r["type"] == "etf" else "stocks")
+                        for _, r in live.iterrows() if r["code"] in want]
+            else:
+                todo = [(r["code"], "etfs" if r["type"] == "etf" else "stocks")
+                        for _, r in live.iterrows()]
+
+            for rnd in range(3):                 # 网络瞬时错误自动降并发重跑
+                if not todo:
+                    break
+                nw = max(1, min(args.workers >> rnd, len(todo)))
+                log(f"历史回补第 {rnd + 1} 轮: {len(todo)} 个标的，{nw} 并行")
+                failed = []
+                t0 = time.time()
+                if nw > 1:
+                    bs.logout()                  # fork 前断开主连接
+                    with ctx.Pool(nw, initializer=_worker_init,
+                                  initargs=(None, today, "extend_back")) as pool:
+                        for i, (code, status) in enumerate(
+                                pool.imap_unordered(_worker_update, todo, chunksize=4)):
+                            if status.startswith("ERROR"):
+                                failed.append((code, dict(todo)[code]))
+                            elif not (status == "up-to-date" or status.startswith("skip")):
+                                log(f"  {code}: {status}")
+                            if (i + 1) % 300 == 0:
+                                log(f"  进度 {i + 1}/{len(todo)}  失败{len(failed)} "
+                                    f"({time.time() - t0:.0f}s)")
+                    lg = bs.login()
+                else:
+                    for code, kind in todo:
+                        try:
+                            s = up.extend_back_code(code, kind)
+                            if not (s == "up-to-date" or s.startswith("skip")):
+                                log(f"  {code}: {s}")
+                        except Exception as e:  # noqa: BLE001
+                            failed.append((code, kind))
+                            log(f"  {code}: ERROR {e}")
+                todo = failed
+                if failed:
+                    log(f"第 {rnd + 1} 轮失败 {len(failed)}，休眠 30s 后重试")
+                    time.sleep(30)
+            log(f"历史回补完成（最终失败 {len(todo)}）")
+            if args.codes:
+                return
+
+        if args.backfill:
+            code = args.backfill.split(".")[0]
+            kind = "etfs" if code.startswith(("15", "16", "18", "51", "56", "58")) else "stocks"
+            # 清空本地强制重拉：先把文件改名备份，失败可还原
+            p = MARKET / "daily" / kind / f"{code}.parquet"
+            bak = p.with_suffix(".parquet.bak")
+            if p.exists():
+                bak.write_bytes(p.read_bytes())
+                p.unlink()
+            log(f"backfill {code} ...")
+            r = up.update_code(code, kind, today)
+            log(f"backfill {code}: {r}")
+            bak.unlink(missing_ok=True)
+            return
+
+        # ---- 最近已收盘交易日（整轮跳过判断的基准）----
+        last_td = up.latest_trade_day()
+        log(f"最近已收盘交易日: {last_td}（{today}）")
+
+        # ---- 增量 ----
+        inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
+        live = inst[(inst["status"] == "L") & inst["exchange"].isin(["SH", "SZ"])]
+        if args.codes:
+            want = {c.strip().split(".")[0] for c in args.codes.split(",") if c.strip()}
+            todo = [(r["code"], "etfs" if r["type"] == "etf" else "stocks")
+                    for _, r in live.iterrows() if r["code"] in want]
+        else:
+            todo = [(r["code"], "etfs" if r["type"] == "etf" else "stocks")
+                    for _, r in live.iterrows()]
+        log(f"增量更新 {len(todo)} 个标的，{args.workers} 并行")
+
+        n_new = n_same = n_skip = n_err = 0
+        t0 = time.time()
+
+        def _feed_result(code, status):
+            nonlocal n_new, n_same, n_skip, n_err
+            if status.startswith("new"):
+                n_new += 1
+            elif status == "skip":
+                n_skip += 1
+            elif status == "up-to-date":
+                n_same += 1
+            else:
+                n_err += 1
+                log(f"  {code}: {status}")
+
+        nw = max(1, min(args.workers, len(todo)))
+        if nw > 1:
+            import multiprocessing as mp
+            ctx = mp.get_context("fork")   # 主进程已 logout 再 fork，子进程各自登录
+            bs.logout()
+            with ctx.Pool(nw, initializer=_worker_init,
+                          initargs=(last_td, today)) as pool:
+                for i, (code, status) in enumerate(
+                        pool.imap_unordered(_worker_update, todo, chunksize=8)):
+                    _feed_result(code, status)
+                    if (i + 1) % 500 == 0:
+                        log(f"  进度 {i + 1}/{len(todo)}  新{n_new} 无变化{n_same} "
+                            f"跳过{n_skip} 错误{n_err} ({time.time() - t0:.0f}s)")
+            lg = bs.login()      # 新股阶段主进程还要用
+        else:
+            for i, (code, kind) in enumerate(todo):
+                _feed_result(code, up.update_code(code, kind, today, last_td))
+                if (i + 1) % 500 == 0:
+                    log(f"  进度 {i + 1}/{len(todo)}  新{n_new} 无变化{n_same} "
+                        f"跳过{n_skip} 错误{n_err} ({time.time() - t0:.0f}s)")
+        log(f"增量完成: 新{n_new} 无变化{n_same} 跳过{n_skip} 错误{n_err}，"
+            f"用时 {time.time() - t0:.0f}s")
+
+        # ---- A股指数（合流到 data/index，海外指数仍走腾讯/Yahoo）----
+        for bsk, tk in BAOSTOCK_INDEXES.items():
+            try:
+                log(f"  指数 {tk}: {up.update_index(bsk, tk, today)}")
+            except Exception as e:  # noqa: BLE001
+                log(f"  指数 {tk}: ERROR {e}")
+
+        # ---- 新股/新 ETF ----
+        if not args.codes:
+            news = up.discover_new()
+            log(f"发现新标的 {len(news)} 个")
+            for code, name, typ, ld, kind in news:
+                try:
+                    up.register_new(code, name, typ, ld, kind)
+                    r = up.update_code(code, kind, today)
+                    log(f"  新增 {code} {name}: {r}")
+                except Exception as e:  # noqa: BLE001
+                    log(f"  新增 {code} 失败: {e}")
+    finally:
+        try:
+            bs.logout()
+        except Exception:  # noqa: BLE001
+            pass
+        release_lock()
+
+
+if __name__ == "__main__":
+    main()
