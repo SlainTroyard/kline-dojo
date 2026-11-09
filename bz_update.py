@@ -137,7 +137,14 @@ class Updater:
         return out
 
     def _relogin(self):
-        """网络错误后重连（baostock 长连接会被服务端掐断）。"""
+        """网络错误后重连（baostock 长连接会被服务端掐断）。
+        两次重连至少间隔 30s：服务端限流时无节制的 logout/login 会放大
+        "异常高频连接"特征（实测封禁的诱因之一），宁可多退避不抢连。"""
+        now = time.time()
+        since = now - getattr(self, "_last_relogin", 0.0)
+        if since < 30:
+            time.sleep(30 - since)
+        self._last_relogin = time.time()
         try:
             self.bs.logout()
         except Exception:  # noqa: BLE001
