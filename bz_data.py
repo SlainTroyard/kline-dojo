@@ -2,8 +2,8 @@
 
 数据根自动探测（优先级）：
   1. 环境变量 BZ_MARKET_ROOT
-  2. 本项目 data/market/（bz_update.py 用 baostock 维护的自有副本）
-  3. ../astock/data/parquet（兄弟项目 tushare 落库；红线：只读绝不写入）
+  2. 本项目 data/market/（bz_update.py 用 baostock 从零建立并维护的自有副本：
+     `bz_update.py --bootstrap` 建库，`--update` 日常增量）
 
 目录布局（serving 层）：
   daily/stocks/{code}.parquet   个股日线（含 adj_factor / 官方涨跌停价，或含 is_st）
@@ -23,7 +23,6 @@ _ROOT = Path(__file__).resolve().parent
 _PQ_CANDIDATES = [
     os.environ.get("BZ_MARKET_ROOT"),
     _ROOT / "data" / "market",
-    _ROOT.parent / "astock" / "data" / "parquet",
 ]
 PQ = Path(next(str(p) for p in _PQ_CANDIDATES if p and Path(p).exists()))
 
@@ -113,7 +112,7 @@ def name_asof(code: str, t: pd.Timestamp) -> str | None:
 # ------------------------------------------------------------- 自选支持 ----
 
 def normalize_code(c: str) -> str | None:
-    """代码归一：astock 的 code 全库为裸 6 位（无 .SH/.SZ 后缀）。
+    """代码归一：本地库的 code 全库为裸 6 位（无 .SH/.SZ 后缀）。
     接受裸码或带后缀码，返回 instruments 里存在的裸码，否则 None。"""
     c = (c or "").strip()
     if not c:

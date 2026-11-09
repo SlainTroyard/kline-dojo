@@ -2,11 +2,11 @@
 """K线道场 KLineDojo——本地服务（原「爆竹训练营」）。
 
 用法：
-    ../astock/.venv/bin/python server.py [--port 8870]
-    ../astock/.venv/bin/python server.py --selftest
+    .venv/bin/python server.py [--port 8870]
+    .venv/bin/python server.py --selftest
 
 零第三方 Web 依赖：标准库 http.server 提供 静态页面(web/) + JSON API；
-行情数据只读 astock 的 parquet（红线：绝不写 astock）。
+行情数据读 data/market/（由 bz_update.py 用 baostock 从零建立并维护）。
 """
 from __future__ import annotations
 
@@ -319,6 +319,17 @@ def selftest(n_each: int = 12) -> int:
             fails += 1
             print(f"  [FAIL] {msg}")
 
+    def leaks(obj, *needles: str) -> bool:
+        """字符串值里包含任一 needle 即泄露；数值巧合不算
+        （如成交量 1508056 天然含代码 "508056" 的数字子串）。"""
+        if isinstance(obj, dict):
+            return any(leaks(v, *needles) for v in obj.values())
+        if isinstance(obj, list):
+            return any(leaks(v, *needles) for v in obj)
+        if isinstance(obj, str):
+            return any(n in obj for n in needles)
+        return False
+
     for cat in ("stock", "limit", "etf"):
         for k in range(n_each):
             params = ({"year_from": 2016, "year_to": 2025, "history": 100, "forward": 80}
@@ -370,9 +381,8 @@ def selftest(n_each: int = 12) -> int:
                 check(hb["up"] is not None and hb["c"] >= hb["up"] * 0.999,
                       f"{tag}: 涨停模式历史末根未涨停 c={hb['c']} up={hb['up']}")
 
-            # 匿名性：payload 序列化后不含代码与真实日期
-            blob = json.dumps(pub, ensure_ascii=False)
-            check(sec["code"] not in blob and sec["start_date"] not in blob,
+            # 匿名性：payload 字符串值不含代码与真实日期（数值子串巧合不算）
+            check(not leaks(pub, sec["code"], sec["start_date"]),
                   f"{tag}: payload 泄露身份")
         print(f"selftest {cat}: done ({n_each} sessions)")
 
@@ -415,9 +425,8 @@ def selftest(n_each: int = 12) -> int:
         if cat == "custom":
             valid = [bz_data.normalize_code(c) for c in params["codes"]]
             check(sec["code"] in valid, f"{tag}: 自选抽了窗口外的代码")
-        # 匿名性
-        blob = json.dumps(pub, ensure_ascii=False)
-        check(sec["code"] not in blob and sec["start_date"] not in blob, f"{tag}: payload 泄露身份")
+        # 匿名性（字符串值包含判断，数值子串巧合不算）
+        check(not leaks(pub, sec["code"], sec["start_date"]), f"{tag}: payload 泄露身份")
         print(f"selftest {name}: done")
 
     print(f"selftest {'PASS' if fails == 0 else f'{fails} FAILURES'}")

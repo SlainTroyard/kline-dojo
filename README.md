@@ -9,25 +9,30 @@
   手动画线（趋势线/水平线，localStorage 按指数持久化）、简化缠论（笔+中枢自动画）
 
 **数据依赖**：个股/ETF 行情存于 `data/market/`（本项目自有副本，**不入库**），由
-`bz_update.py` 用 **baostock**（免费无 token）维护——增量 + 新股 + A股指数 + 2015 以前历史回补；
-海外指数仍走腾讯/Yahoo（`data/index/`）。详见「数据与更新」章节。
+`bz_update.py` 用 **baostock**（免费无 token）**从零建立并维护**——全新克隆一条命令
+`--bootstrap` 即可建库（含退市股）；海外指数走腾讯/Yahoo（`data/index/`）。
+详见「数据与更新」章节。
 
-## 启动
+## 快速开始（全新克隆三步走）
 
 ```bash
-cd kline-dojo                       # 本地目录名不限（原 baozhu）
-../astock/.venv/bin/python server.py   # 默认 8870 端口，借用 astock 的 venv（pandas/pyarrow）
-# 浏览器打开 http://127.0.0.1:8870
+cd kline-dojo
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+.venv/bin/python bz_update.py --bootstrap      # 从零建库，约 2-4 小时（可中断重跑续传）
+.venv/bin/python server.py                     # 默认 8870 端口 → http://127.0.0.1:8870
 ```
 
-零第三方 Web 依赖（标准库 http.server）。数据根自动探测：优先本项目 `data/market/`，
-缺省回退 `../astock/data/parquet`（tushare 落库，**只读红线**，也可用 `BZ_MARKET_ROOT`
-环境变量指定）。
+嫌建库慢想先试玩：`--bootstrap --codes 600519,300750,510300,...` 只建指定标的（每个
+标的抓全史，几分钟即可开练；日后跑全量 `--bootstrap` 自动补齐其余，互不冲突）。
+
+Web 端零第三方依赖（标准库 http.server）；pandas/pyarrow 是服务端读 parquet 用，
+baostock 是更新器用。数据根默认 `data/market/`，可用 `BZ_MARKET_ROOT` 环境变量改指。
 
 自检（数据不变量断言，改完代码跑一下）：
 
 ```bash
-../astock/.venv/bin/python server.py --selftest
+.venv/bin/python server.py --selftest
 ```
 
 ## 训练品类（开始页 5 张卡片）
@@ -86,7 +91,7 @@ MA5/10/20/60、BOLL(20,2)、MACD(12,26,9)、KDJ(9,3,3)、VOL、简化缠论（�
 - **数据**：腾讯 ifzq `kline/kline`（A股 11 个 + 港 3 + 标普/纳指综合/道指）+ Yahoo chart
   （纳指100 `^NDX`，腾讯无其历史）。指数为价格指数无除权，单一源全历史无拼接跳空。
 - **全历史**：启动时后台自动增量刷新（首次全量回填）；页面「⟳ 同步数据」手动同步
-  （18 个约 15 秒）。astock 每天 01:00 更新后，早上打开看板点一下同步即最新（仅日线）。
+  （18 个约 15 秒）。配了 cron 自动更新（见下）的话，早上打开看板点一下同步即最新（仅日线）。
 - **周期/指标**：日/周/月/年由日线在前端聚合（ISO 周）；MA5/10/20/60、BOLL(20,2)、
   MACD(12,26,9)、KDJ(9,3,3)、VOL 均为开关。
 - **画线**：趋势线（两点）、水平线（一带价格标签）、点击删除、清空；按指数存
@@ -120,13 +125,24 @@ MA5/10/20/60、BOLL(20,2)、MACD(12,26,9)、KDJ(9,3,3)、VOL、简化缠论（�
 行情自有副本在 `data/market/`，每标的 12 列：serving 10 列 + **amount（成交额）** +
 **turnover_rate（换手率%）**，个股额外带 `is_st`（0/1）逐日列——量能数据完整。
 
-1. **初始导入**：从兄弟项目 tushare 副本瘦身复制（2015-2026，含退市股）
+1. **从零建库 `bz_update.py --bootstrap`**：逐年（最后一个交易日）`query_all_stock`
+   快照并集发现全部标的——**含已退市股**（训练池无幸存者偏差；快照按日期过滤准确，
+   实测 2000 年快照无 2001 年上市的茅台、有 2005/2010 年退市的齐鲁石化/邯郸钢铁）→
+   8 进程并行全量抓取（1990s 至今，baostock 每次调用 3-8s，约 2-4 小时）→
+   用各标的本地首根 bar 回填上市日（免每标的一次 query_stock_basic）。
+   `--codes` 可只建指定标的（试玩/补漏）。
+   **全程可中断重跑续传**（快照与抓取都有断点）。baostock 对过频请求会临时拉黑
+   （10001011，几分钟到数小时自动解除）——快照间隔已限速，若仍撞上，等解除后
+   重跑同一条命令即可接着上次的进度继续。实测数据质量：与 tushare 副本比对，
+   价格逐位一致、涨跌停 100% 吻合、因子比例一致（绝对量纲两源各自恒定，
+   前复权只用比例，不受影响）
 2. **日常维护 `bz_update.py`**（baostock 免费无 token）：
    - `--update`：增量追加全部在市标的（交易日历预判，无新交易日时全库零 API 调用、
      62 秒跑完；8 进程并行）+ 自动发现回补新股/新 ETF + **A股 11 指数合流**到
      `data/index/`（与腾讯缓存同文件 append-only，量纲 股→手 已对齐；科创50 baostock
      无数据仍走腾讯）+ 海外指数照旧腾讯/Yahoo
-   - `--extend-back`：**回补 2015 以前历史**（baostock 可回溯至 1990s，全库约 2 小时）
+   - `--extend-back`：**回补既有副本 2015 以前历史**（从 tushare 副本导入的老库用；
+     `--bootstrap` 建的库天然全历史，无需此步）
    - `--backfill 代码`：单标的全量重拉
    - `--validate --sample 40`：抽样与官方值比对（自检口径漂移）
    - `--check-factors`：全库因子步长审计（每个除权日验证 因子步长 == 昨收/除权基准）
@@ -150,11 +166,11 @@ MA5/10/20/60、BOLL(20,2)、MACD(12,26,9)、KDJ(9,3,3)、VOL、简化缠论（�
 抽样 40 只与 tushare 官方值 100% 吻合。停牌日丢弃（与 tushare 口径一致）。
 
 ```bash
-# 环境准备（本项目独立 venv，不碰 astock）
-python3 -m venv .venv && .venv/bin/pip install pandas pyarrow baostock
+# 环境准备（本项目独立 venv）
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
+.venv/bin/python bz_update.py --bootstrap            # 一次性：从零建库（全新克隆）
 .venv/bin/python bz_update.py --update               # 日常（cron 也跑这个）
-.venv/bin/python bz_update.py --extend-back          # 一次性：回补 2015 以前
 .venv/bin/python bz_update.py --validate --sample 40 # 抽样比对
 .venv/bin/python bz_update.py --check-factors        # 因子审计
 ```
@@ -167,25 +183,27 @@ python3 -m venv .venv && .venv/bin/pip install pandas pyarrow baostock
 30 1 * * 2-6  cd /path/to/kline-dojo && .venv/bin/python bz_update.py --update >> data/update.log 2>&1
 ```
 
-已知口径差异（baostock vs tushare）：退市股历史不可查（副本已含 2015-2026 退市股）；
-名称变更时间线无（新股用当前名，ST 判定用逐日 `is_st` 列，更准）。
+已知口径差异（baostock vs tushare）：名称变更时间线 baostock 无（bootstrap 建库的
+`names.parquet` 每标的一条、用快照名；揭晓显示历史名可能滞后，但 ST 判定用逐日
+`is_st` 列，比名称匹配更准）；退市股上市/退市具体日期未逐只核对（随机池的年份过滤
+用首根 bar 日期，天然准确）。
 
 ## 数据与代码来源
 
-- 行情：`data/market/`（自有副本；或回退 `../astock/data/parquet`，tushare 落库），
-  `instruments.parquet`（上市日、代码清单）、`names.parquet`（名称时间线，揭晓名用；
+- 行情：`data/market/`（自有副本，`--bootstrap` 从零再生），`instruments.parquet`
+  （上市日、代码清单，bootstrap 后含退市股 status=D）、`names.parquet`（名称，揭晓名用；
   ST 判定优先 `is_st` 列）；代码全库为裸 6 位（无 .SH/.SZ 后缀）
 - 复权：前复权锚定窗口末根（`adj_factor / 末根 adj_factor` 等比缩放 OHLC 与涨跌停价），
   窗口末根价格=当时真实价格；指数无复权（价格指数）
-- 图表：lightweight-charts v4.1.3（Apache-2.0，复制自 `../daily/assets/`）
-- 撮合规则参考 `../astock/astock/engine/`（T+1/涨跌停/整手/费用）
+- 图表：lightweight-charts v4.1.3（Apache-2.0，见 `web/vendor/NOTICE.md`）
+- 撮合规则（T+1/涨跌停/整手/费用）自研，规则详见上文「交易规则」章节
 
 ## 文件
 
 ```
 server.py        标准库 HTTP 服务：静态 + /api/new|reveal|finish|stats + /api/search + /api/index/* + /api/market/* + --selftest
 bz_data.py       行情 parquet 只读层（数据根自动探测）+ 自选搜索（search/normalize_code/kind_of）
-bz_update.py     baostock 行情更新器：增量/新股回补/复权因子/涨跌停计算/抽样比对
+bz_update.py     baostock 行情更新器：--bootstrap 从零建库/增量/新股回补/复权因子/涨跌停计算/抽样比对
 bz_session.py    会话生成：stock/etf/limit/custom/index 五品类 + 定窗 + 费率/成交模式透传
 bz_index.py      指数缓存：腾讯/Yahoo 混合源、全历史翻页回填、增量刷新、parquet 存储
 web/             前端（无构建步骤）：
@@ -195,10 +213,10 @@ web/             前端（无构建步骤）：
   view.js        指数看板
   app.js         训练：回放 + 撮合引擎（当根收盘/次日开盘）+ 周期指标缠论 + 开始页
 data/results.jsonl  训练成绩存档（append-only）
-data/index/*.parquet 指数日线缓存（18 个，独立于 astock）
+data/index/*.parquet 指数日线缓存（18 个；A股 11 个 baostock 增量合流，海外腾讯/Yahoo）
 ```
 
 ## v2 备选
 
-自动卖出/止损止盈、分仓多标的、分钟线回放（astock 有 5min 数据）、看板加行业/概念
+自动卖出/止损止盈、分仓多标的、分钟线回放（需引入分钟级数据源）、看板加行业/概念
 指数、画线拖拽编辑、训练画线按会话持久化。

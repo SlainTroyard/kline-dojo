@@ -1,13 +1,14 @@
 """指数日线缓存层（腾讯 ifzq 为主，纳指100 走 Yahoo）。
 
-- 独立于 astock：缓存存 baozhu/data/index/*.parquet，绝不写 astock（红线）
+- 缓存存本项目 data/index/*.parquet（A股 11 指数另有 bz_update.py 的 baostock
+  合流追加，同文件 append-only）
 - 腾讯单次上限 800 根 → 按日期窗自适应翻页拿全历史（上证 1990 起、标普 1928 起）
 - 纳指100 腾讯无历史 → Yahoo chart 接口 ^NDX 一次拿全量
 - 指数为价格指数无除权，接口的 qfq 参数仅为格式兼容
 - 腾讯返回顺序是 [日期, 开, 收, 高, 低, 量]，入库转为标准 OHLCV
 
-为何不用 baostock/东财：baostock 无海外指数且需装包（不能写 astock venv）；
-东财 push2his 在本机网络 502。腾讯源是 daily 项目每日在用的已验证通道。
+为何不用 baostock/东财：baostock 无海外指数；东财 push2his 在本机网络 502。
+腾讯源是每日在用的已验证通道。
 """
 from __future__ import annotations
 

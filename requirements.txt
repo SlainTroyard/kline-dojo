@@ -1,0 +1,4 @@
+# server.py 需要 pandas/pyarrow 读行情 parquet；bz_update.py 另需 baostock
+pandas
+pyarrow
+baostock

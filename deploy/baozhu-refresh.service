@@ -1,4 +1,4 @@
-# 每日指数增量刷新（astock 01:00 更新后跑）
+# 每日指数增量刷新
 [Unit]
 Description=KLineDojo index daily refresh
 
