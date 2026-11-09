@@ -628,7 +628,7 @@ class Updater:
             if key in done:
                 continue
             if done or found:                       # 限速：query_all_stock 全表很重
-                time.sleep(4)
+                time.sleep(8)                      # （8s：快照连发是实测封禁的主要嫌疑）
             try:
                 rows = self._retry(
                     lambda dd=d: self._rows(self.bs.query_all_stock(day=dd.isoformat())))
@@ -917,6 +917,7 @@ def main():
                 sys.exit("bootstrap: 未发现任何标的")
             log(f"bootstrap 全量抓取 {len(todo)} 个标的（单进程限速，"
                 f"baostock 每次调用 3-8s，中断可重跑续传）")
+            time.sleep(60)          # 扫描（重量级快照）与抓取之间留缓冲
             failed = _serial_rounds(todo, "bootstrap", up, today, "bootstrap")
             up.backfill_list_dates()
             for bsk, tk in BAOSTOCK_INDEXES.items():
