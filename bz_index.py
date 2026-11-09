@@ -8,7 +8,8 @@
 - 腾讯返回顺序是 [日期, 开, 收, 高, 低, 量]，入库转为标准 OHLCV
 
 为何不用 baostock/东财：baostock 无海外指数；东财 push2his 在本机网络 502。
-腾讯源是每日在用的已验证通道。
+腾讯源是每日在用的已验证通道。代理策略：腾讯等国内源强制直连（不经代理出口），
+Yahoo（纳指100）国内直连不通、保留系统代理。
 """
 from __future__ import annotations
 
@@ -50,12 +51,22 @@ INSTRUMENTS = [
 BY_KEY = {i["key"]: i for i in INSTRUMENTS}
 
 
-def _http_json(url: str, retries: int = 2) -> dict:
-    """带重试的 GET（Yahoo 偶发 SSL 断连、腾讯偶发限流）。"""
+# 腾讯等国内源强制直连（无视 http_proxy/https_proxy 环境变量——本机若挂代理，
+# 行情拉取不经过代理出口，避免代理出口 IP 被限流/封禁连累）；雅虎源国内
+# 直连不通，保留系统代理。
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _http_json(url: str, retries: int = 2, direct: bool = False) -> dict:
+    """带重试的 GET（Yahoo 偶发 SSL 断连、腾讯偶发限流）。
+    direct=True 强制直连（绕过代理环境变量）。"""
     last = None
     for i in range(retries + 1):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
+            if direct:
+                with _DIRECT_OPENER.open(req, timeout=20) as r:
+                    return json.loads(r.read().decode("utf-8"))
             with urllib.request.urlopen(req, timeout=20) as r:
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:  # noqa: BLE001
@@ -106,7 +117,7 @@ def fetch_window(key: str, start: str, end: str) -> list[list]:
     """拉一个日期窗（≤800 根），统一走 kline/kline（指数无需复权；
     fqkline 端点易被限流 501，且对指数无额外价值）。键名不统一故遍历取 day。"""
     url = f"{HOST}/kline/kline?param={key},day,{start},{end},{MAX_BARS}"
-    d = _http_json(url)
+    d = _http_json(url, direct=True)
     if d.get("code") != 0:
         raise RuntimeError(f"{key} 接口错误: {d.get('msg')}")
     for v in (d.get("data") or {}).values():
