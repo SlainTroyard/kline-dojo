@@ -18,14 +18,16 @@ schema（个股/ETF）：serving 10 列 + amount(成交额,元) + turnover_rate(
 append-only 合流：成交量按 股→手 除以 100，价格实测两源一致；海外指数仍走腾讯/Yahoo）。
 
 用法（用本项目 venv）：
-    .venv/bin/python bz_update.py --bootstrap              # 从零建库（含退市股，约2-4小时）
+    .venv/bin/python bz_update.py --bootstrap              # 从零建库（含退市股，单进程过夜，可中断续传）
     .venv/bin/python bz_update.py --bootstrap --codes 600519,510300  # 只建指定标的（快试用）
     .venv/bin/python bz_update.py --update                 # 增量 + 新股 + 指数
     .venv/bin/python bz_update.py --update --codes 600519,300750
-    .venv/bin/python bz_update.py --backfill 301999        # 单标的全量回补
-    .venv/bin/python bz_update.py --extend-back            # 回补既有副本 2015 以前历史（约2小时）
+    .venv/bin/python bz_update.py --backfill 301999        # 单标的全量回补（可强行重拉）
+    .venv/bin/python bz_update.py --extend-back            # 回补既有副本 2015 以前历史（单进程，较慢）
     .venv/bin/python bz_update.py --extend-back --codes 000001,600519
     .venv/bin/python bz_update.py --validate --sample 30   # 与既有数据抽样比对
+
+抓取一律单进程串行 + 限速（baostock 会拉黑并发/高频 IP，绝不用多进程）。
 """
 from __future__ import annotations
 
@@ -274,9 +276,12 @@ class Updater:
     def latest_trade_day(self) -> date:
         """baostock 交易日历 → 最近一个已收盘的交易日（无新交易日时整轮零 API 调用）。"""
         d0 = date.today() - timedelta(days=20)
-        rs = self.bs.query_trade_dates(start_date=d0.isoformat(),
-                                       end_date=date.today().isoformat())
-        rows = self._rows(rs)
+
+        def _do():
+            rs = self.bs.query_trade_dates(start_date=d0.isoformat(),
+                                           end_date=date.today().isoformat())
+            return self._rows(rs)
+        rows = self._retry(_do)
         days = [date.fromisoformat(r[0]) for r in rows if r[1] == "1"]
         return max(days) if days else date.today()
 
@@ -316,10 +321,18 @@ class Updater:
         if not len(k):
             return "up-to-date"
 
-        # ---- 复权因子：除权检测（新首行 pre_close ≠ 本地昨收）----
+        # ---- 复权因子：除权检测 ----
         first_pre = float(k["pre_close"].iloc[0])
-        exdiv = prev_close is None or prev_factor is None or \
-            abs(first_pre / prev_close - 1) > 0.0005
+        if prev_close is None:
+            # 全新抓取：序列内无 pre_close 跳变（从未分红/除权）→ 因子恒 1.0，
+            # 免拉事件表（近半标的无分红历史，单进程限速下省一半 API 调用）
+            clean = all(
+                pc <= 0 or c <= 0 or abs(pc / c - 1) <= 0.0005
+                for pc, c in zip(k["pre_close"].iloc[1:], k["close"].iloc[:-1]))
+            exdiv = not clean
+        else:
+            # 增量：新首行 pre_close ≠ 本地昨收 → 有除权
+            exdiv = prev_factor is None or abs(first_pre / prev_close - 1) > 0.0005
         if exdiv:
             events = self.fetch_factor_events(code)
             ref_rows = local[local["adj_factor"].notna()] if len(local) else local
@@ -573,9 +586,11 @@ class Updater:
         返回 [(code, kind)] 待抓清单。
         快照连发易触发 baostock 黑名单限流（10001011）：调用间隔 4s，进度落
         .bootstrap_scan.json，被封中断后重跑自动续扫。"""
-        rs = self.bs.query_trade_dates(start_date="1993-01-01",
-                                       end_date=date.today().isoformat())
-        tds = [date.fromisoformat(r[0]) for r in self._rows(rs) if r[1] == "1"]
+        def _cal():
+            rs = self.bs.query_trade_dates(start_date="1993-01-01",
+                                           end_date=date.today().isoformat())
+            return self._rows(rs)
+        tds = [date.fromisoformat(r[0]) for r in self._retry(_cal) if r[1] == "1"]
         by_year: dict[int, date] = {}
         for d in tds:
             if d.year not in by_year or d > by_year[d.year]:
@@ -802,84 +817,59 @@ def release_lock():
     LOCK.unlink(missing_ok=True)
 
 
-# ---- 并行 worker（fork 进程，各自登录 baostock）----
-_W: dict = {}
+# ---- 串行抓取轮次 ----
 
+def _serial_rounds(todo: list[tuple[str, str]], mode: str,
+                   up, today, label: str,
+                   last_td=None) -> list[tuple[str, str]]:
+    """单进程串行抓取 + 失败分 3 轮重跑。返回最终失败清单。
 
-def _worker_init(last_td, today, mode="update"):
-    import baostock as _bs
-    _bs.login()
-    _W["up"] = Updater()
-    _W["last_td"] = last_td
-    _W["today"] = today
-    _W["mode"] = mode
-
-
-def _worker_update(item):
-    code, kind = item
-    try:
-        if _W["mode"] == "extend_back":
-            return code, _W["up"].extend_back_code(code, kind)
-        if _W["mode"] == "bootstrap":
-            return code, _W["up"].update_code(code, kind, _W["today"],
-                                              None, full_from="1990-01-01")
-        return code, _W["up"].update_code(code, kind, _W["today"], _W["last_td"])
-    except Exception as e:  # noqa: BLE001
-        return code, f"ERROR {type(e).__name__}: {e}"
-
-
-def _parallel_rounds(todo: list[tuple[str, str]], mode: str, workers: int,
-                     bs, up, label: str) -> list[tuple[str, str]]:
-    """并行跑 todo + 失败分 3 轮重跑（网络瞬时错误自动降并发，逐轮减半）。
-    返回最终失败清单。"""
-    import multiprocessing as mp
-    ctx = mp.get_context("fork")
+    baostock 对并发登录/高频请求敏感（会拉黑 IP），绝不用多进程：
+    整轮一次登录、连接被掐由 _retry 自动重连；发过请求的标的之间
+    小睡 0.5s 限速（本地 skip 的不发请求、不睡）。
+    """
     todo = list(todo)
     for rnd in range(3):
         if not todo:
             break
-        nw = max(1, min(workers >> rnd, len(todo)))
-        log(f"{label}第 {rnd + 1} 轮: {len(todo)} 个标的，{nw} 并行")
+        log(f"{label}第 {rnd + 1} 轮: {len(todo)} 个标的（单进程）")
         failed: list[tuple[str, str]] = []
         throttled = False
+        n_new = n_same = n_skip = 0
         t0 = time.time()
-        if nw > 1:
-            bs.logout()                  # fork 前断开主连接，子进程各自登录
-            with ctx.Pool(nw, initializer=_worker_init,
-                          initargs=(None, date.today(), mode)) as pool:
-                kind_of = dict(todo)
-                for i, (code, status) in enumerate(
-                        pool.imap_unordered(_worker_update, todo, chunksize=4)):
-                    if status.startswith("ERROR"):
-                        failed.append((code, kind_of[code]))
-                        throttled = throttled or "10001011" in status
-                    elif not (status == "up-to-date" or status.startswith("skip")):
-                        log(f"  {code}: {status}")
-                    if (i + 1) % 300 == 0:
-                        log(f"  进度 {i + 1}/{len(todo)}  失败{len(failed)} "
-                            f"({time.time() - t0:.0f}s)")
-            bs.login()
-        else:
-            for code, kind in todo:
-                try:
-                    if mode == "extend_back":
-                        s = up.extend_back_code(code, kind)
-                    elif mode == "bootstrap":
-                        s = up.update_code(code, kind, date.today(),
-                                           None, full_from="1990-01-01")
-                    else:
-                        s = up.update_code(code, kind, date.today())
-                    if not (s == "up-to-date" or s.startswith("skip")):
-                        log(f"  {code}: {s}")
-                except Exception as e:  # noqa: BLE001
-                    failed.append((code, kind))
-                    throttled = throttled or "10001011" in str(e)
-                    log(f"  {code}: ERROR {e}")
+        for i, (code, kind) in enumerate(todo):
+            try:
+                if mode == "extend_back":
+                    s = up.extend_back_code(code, kind)
+                elif mode == "bootstrap":
+                    s = up.update_code(code, kind, today, None, full_from="1990-01-01")
+                else:
+                    s = up.update_code(code, kind, today, last_td)
+            except Exception as e:  # noqa: BLE001
+                s = f"ERROR {type(e).__name__}: {e}"
+            if s.startswith("ERROR"):
+                failed.append((code, kind))
+                throttled = throttled or "10001011" in s
+                log(f"  {code}: {s}")
+            elif s.startswith(("new", "prepend")):
+                n_new += 1
+                log(f"  {code}: {s}")
+            elif s.startswith("skip"):
+                n_skip += 1
+            else:                                   # up-to-date 等未变更状态
+                n_same += 1
+            if not s.startswith(("skip", "ERROR")):
+                time.sleep(0.5)                     # 发过请求才限速
+            if (i + 1) % 200 == 0:
+                log(f"  进度 {i + 1}/{len(todo)}  新{n_new} 无变化{n_same} "
+                    f"跳过{n_skip} 失败{len(failed)} ({time.time() - t0:.0f}s)")
+        log(f"{label}第 {rnd + 1} 轮完成: 新{n_new} 无变化{n_same} 跳过{n_skip} "
+            f"失败{len(failed)}，用时 {time.time() - t0:.0f}s")
         todo = failed
         if failed:
-            wait = 180 if throttled else 30      # 黑名单限流：等更久再试
-            log(f"第 {rnd + 1} 轮失败 {len(failed)}"
-                f"{'（疑似 baostock 限流）' if throttled else ''}，休眠 {wait}s 后重试")
+            wait = 180 if throttled else 30         # 黑名单限流：等更久再试
+            log(f"休眠 {wait}s 后重试失败标的"
+                f"{'（疑似 baostock 限流）' if throttled else ''}")
             time.sleep(wait)
     return todo
 
@@ -898,7 +888,6 @@ def main():
                     help="审计全库因子步长（除权日 因子步长==昨收/除权基准）")
     ap.add_argument("--validate", action="store_true", help="抽样与既有数据比对")
     ap.add_argument("--sample", type=int, default=30)
-    ap.add_argument("--workers", type=int, default=8, help="并行进程数（各自登录 baostock）")
     args = ap.parse_args()
 
     if not MARKET.exists() and not args.bootstrap:
@@ -926,9 +915,9 @@ def main():
             todo = up.bootstrap_scan(want)
             if not todo:
                 sys.exit("bootstrap: 未发现任何标的")
-            log(f"bootstrap 全量抓取 {len(todo)} 个标的，{args.workers} 并行"
-                f"（baostock 每次调用 3-8s，中断可重跑续传）")
-            failed = _parallel_rounds(todo, "bootstrap", args.workers, bs, up, "bootstrap")
+            log(f"bootstrap 全量抓取 {len(todo)} 个标的（单进程限速，"
+                f"baostock 每次调用 3-8s，中断可重跑续传）")
+            failed = _serial_rounds(todo, "bootstrap", up, today, "bootstrap")
             up.backfill_list_dates()
             for bsk, tk in BAOSTOCK_INDEXES.items():
                 try:
@@ -947,7 +936,7 @@ def main():
                 want = [c.strip().split(".")[0] for c in args.codes.split(",") if c.strip()]
             sys.exit(0 if up.check_factors(want) == 0 else 1)
 
-        # ---- 2015 以前历史回补（并行 + 失败分轮重跑，并发逐轮减半）----
+        # ---- 2015 以前历史回补（单进程串行 + 失败分轮重跑）----
         if args.extend_back:
             inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
             live = inst[(inst["status"].isin(["L"])) | inst["delist_date"].notna()]
@@ -959,7 +948,7 @@ def main():
             else:
                 todo = [(r["code"], "etfs" if r["type"] == "etf" else "stocks")
                         for _, r in live.iterrows()]
-            todo = _parallel_rounds(todo, "extend_back", args.workers, bs, up, "历史回补")
+            todo = _serial_rounds(todo, "extend_back", up, today, "历史回补")
             log(f"历史回补完成（最终失败 {len(todo)}）")
             if args.codes:
                 return
@@ -983,7 +972,7 @@ def main():
         last_td = up.latest_trade_day()
         log(f"最近已收盘交易日: {last_td}（{today}）")
 
-        # ---- 增量 ----
+        # ---- 增量（单进程串行；无新交易日时全库本地跳过、零 API 调用）----
         inst = pd.read_parquet(MARKET / "instruments.parquet").astype({"code": str})
         live = inst[(inst["status"] == "L") & inst["exchange"].isin(["SH", "SZ"])]
         if args.codes:
@@ -993,45 +982,10 @@ def main():
         else:
             todo = [(r["code"], "etfs" if r["type"] == "etf" else "stocks")
                     for _, r in live.iterrows()]
-        log(f"增量更新 {len(todo)} 个标的，{args.workers} 并行")
-
-        n_new = n_same = n_skip = n_err = 0
-        t0 = time.time()
-
-        def _feed_result(code, status):
-            nonlocal n_new, n_same, n_skip, n_err
-            if status.startswith("new"):
-                n_new += 1
-            elif status == "skip":
-                n_skip += 1
-            elif status == "up-to-date":
-                n_same += 1
-            else:
-                n_err += 1
-                log(f"  {code}: {status}")
-
-        nw = max(1, min(args.workers, len(todo)))
-        if nw > 1:
-            import multiprocessing as mp
-            ctx = mp.get_context("fork")   # 主进程已 logout 再 fork，子进程各自登录
-            bs.logout()
-            with ctx.Pool(nw, initializer=_worker_init,
-                          initargs=(last_td, today)) as pool:
-                for i, (code, status) in enumerate(
-                        pool.imap_unordered(_worker_update, todo, chunksize=8)):
-                    _feed_result(code, status)
-                    if (i + 1) % 500 == 0:
-                        log(f"  进度 {i + 1}/{len(todo)}  新{n_new} 无变化{n_same} "
-                            f"跳过{n_skip} 错误{n_err} ({time.time() - t0:.0f}s)")
-            lg = bs.login()      # 新股阶段主进程还要用
-        else:
-            for i, (code, kind) in enumerate(todo):
-                _feed_result(code, up.update_code(code, kind, today, last_td))
-                if (i + 1) % 500 == 0:
-                    log(f"  进度 {i + 1}/{len(todo)}  新{n_new} 无变化{n_same} "
-                        f"跳过{n_skip} 错误{n_err} ({time.time() - t0:.0f}s)")
-        log(f"增量完成: 新{n_new} 无变化{n_same} 跳过{n_skip} 错误{n_err}，"
-            f"用时 {time.time() - t0:.0f}s")
+        log(f"增量更新 {len(todo)} 个标的（单进程）")
+        failed = _serial_rounds(todo, "update", up, today, "增量更新", last_td=last_td)
+        if failed:
+            log(f"增量最终失败 {len(failed)} 个，明晚会自动重试")
 
         # ---- A股指数（合流到 data/index，海外指数仍走腾讯/Yahoo）----
         for bsk, tk in BAOSTOCK_INDEXES.items():
