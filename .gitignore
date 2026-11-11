@@ -28,3 +28,4 @@ data/index/*.parquet
 .vscode/
 .idea/
 .DS_Store
+data/replays/
