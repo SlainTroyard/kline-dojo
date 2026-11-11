@@ -9,7 +9,7 @@ window.View = (() => {
 
   let inited = false;
   let chart = null, candle = null, volS = null;
-  let maS = {}, bollS = {}, bollCandle = null, macdS = {}, kdjS = {};
+  let maS = {}, bollS = {}, bollBar = null, macdS = {}, kdjS = {};
   let overlay = null;
   let insts = [];
   let curKey = null, curName = '';
@@ -141,10 +141,10 @@ window.View = (() => {
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
     }
-    bollCandle = chart.addCandlestickSeries({
+      bollBar = chart.addBarSeries({
       priceScaleId: 'boll',
-      upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
-      wickUpColor: UP, wickDownColor: DOWN,
+      upColor: UP, downColor: DOWN,
+      thinBars: true,                     // 竹线：细竖线=高低，左爪开/右爪收
       priceLineVisible: false, lastValueVisible: false,
     });
     bollS = {
@@ -210,13 +210,13 @@ window.View = (() => {
   function applyPaneLayout() {
     const bollOn = !!toggles.boll;
     chart.priceScale('right').applyOptions({
-      scaleMargins: bollOn ? { top: 0.01, bottom: 0.58 } : { top: 0.02, bottom: 0.44 },
+      scaleMargins: bollOn ? { top: 0.01, bottom: 0.51 } : { top: 0.02, bottom: 0.44 },
     });
     chart.priceScale('boll').applyOptions({
-      scaleMargins: { top: 0.44, bottom: 0.32 }, visible: false,
+      scaleMargins: { top: 0.51, bottom: 0.35 }, visible: false,
     });
     chart.priceScale('vol').applyOptions({
-      scaleMargins: bollOn ? { top: 0.71, bottom: 0.19 } : { top: 0.70, bottom: 0.22 },
+      scaleMargins: bollOn ? { top: 0.68, bottom: 0.20 } : { top: 0.70, bottom: 0.22 },
     });
     chart.priceScale('macd').applyOptions({
       scaleMargins: bollOn ? { top: 0.83, bottom: 0.09 } : { top: 0.82, bottom: 0.10 },
@@ -238,12 +238,12 @@ window.View = (() => {
     }
     if (toggles.boll) {
       const bo = window.Ind.boll(closes);
-      bollCandle.setData(bars.map((b) => ({ time: b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
+      bollBar.setData(bars.map((b) => ({ time: b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
       bollS.mid.setData(line(bo.mid));
       bollS.up.setData(line(bo.up));
       bollS.low.setData(line(bo.low));
     } else {
-      bollCandle.setData([]);
+      bollBar.setData([]);
       bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
     }
     if (toggles.macd) {
@@ -297,7 +297,7 @@ window.View = (() => {
   function applyToggles() {
     const vis = (s, on) => s.applyOptions({ visible: !!on });
     for (const m of MA_DEFS) vis(maS[m.p], toggles.ma);
-    vis(bollCandle, toggles.boll);
+    vis(bollBar, toggles.boll);
     vis(bollS.mid, toggles.boll); vis(bollS.up, toggles.boll); vis(bollS.low, toggles.boll);
     vis(macdS.hist, toggles.macd); vis(macdS.dif, toggles.macd); vis(macdS.dea, toggles.macd);
     vis(kdjS.k, toggles.kdj); vis(kdjS.d, toggles.kdj); vis(kdjS.j, toggles.kdj);

@@ -53,7 +53,7 @@ let modalMode = null;
 let finished = false;
 let lastCategory = 'stock', lastParams = {};
 
-let chart = null, candle = null, volS = null, maS = {}, bollS = {}, bollCandle = null, macdS = {}, kdjS = {};
+let chart = null, candle = null, volS = null, maS = {}, bollS = {}, bollBar = null, macdS = {}, kdjS = {};
 let coverRO = null;                       // 遮轴条 ResizeObserver（重建前 disconnect）
 let trainThemeDirty = false;             // 看板页切主题后回训练页签需补重建
 let overlay = null;             // 训练会话内画线（不持久化）
@@ -235,13 +235,13 @@ function settlePending() {
 function applyTrainPaneLayout() {
   const bollOn = !!tToggles.boll;
   chart.priceScale('right').applyOptions({
-    scaleMargins: bollOn ? { top: 0.01, bottom: 0.58 } : { top: 0.02, bottom: 0.44 },
+    scaleMargins: bollOn ? { top: 0.01, bottom: 0.51 } : { top: 0.02, bottom: 0.44 },
   });
   chart.priceScale('boll').applyOptions({
-    scaleMargins: { top: 0.44, bottom: 0.32 }, visible: false,
+    scaleMargins: { top: 0.51, bottom: 0.35 }, visible: false,
   });
   chart.priceScale('vol').applyOptions({
-    scaleMargins: bollOn ? { top: 0.71, bottom: 0.19 } : { top: 0.70, bottom: 0.22 },
+    scaleMargins: bollOn ? { top: 0.68, bottom: 0.20 } : { top: 0.70, bottom: 0.22 },
   });
   chart.priceScale('macd').applyOptions({
     scaleMargins: bollOn ? { top: 0.83, bottom: 0.09 } : { top: 0.82, bottom: 0.10 },
@@ -279,10 +279,10 @@ function buildTrainChart() {
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
     });
   }
-  bollCandle = chart.addCandlestickSeries({
+    bollBar = chart.addBarSeries({
     priceScaleId: 'boll',
-    upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
-    wickUpColor: UP, wickDownColor: DOWN,
+    upColor: UP, downColor: DOWN,
+    thinBars: true,                     // 竹线：细竖线=高低，左爪开/右爪收
     priceLineVisible: false, lastValueVisible: false,
   });
   bollS = {
@@ -404,12 +404,12 @@ function refillTrainIndicators(bars) {
   }
   if (tToggles.boll) {
     const bo = window.Ind.boll(closes);
-    bollCandle.setData(bars.map((b) => ({ time: tsOf(b.d), open: b.o, high: b.h, low: b.l, close: b.c })));
+    bollBar.setData(bars.map((b) => ({ time: tsOf(b.d), open: b.o, high: b.h, low: b.l, close: b.c })));
     bollS.mid.setData(line(bo.mid));
     bollS.up.setData(line(bo.up));
     bollS.low.setData(line(bo.low));
   } else {
-    bollCandle.setData([]);
+    bollBar.setData([]);
     bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
   }
   if (tToggles.macd) {
@@ -474,7 +474,7 @@ function renderTrainChart(refit = false) {
 function applyTrainToggles(skipRender = false) {
   const vis = (s, on) => s.applyOptions({ visible: !!on });
   for (const m of MA_DEFS) vis(maS[m.p], tToggles.ma);
-  vis(bollCandle, tToggles.boll);
+  vis(bollBar, tToggles.boll);
   vis(bollS.mid, tToggles.boll); vis(bollS.up, tToggles.boll); vis(bollS.low, tToggles.boll);
   vis(macdS.hist, tToggles.macd); vis(macdS.dif, tToggles.macd); vis(macdS.dea, tToggles.macd);
   vis(kdjS.k, tToggles.kdj); vis(kdjS.d, tToggles.kdj); vis(kdjS.j, tToggles.kdj);
