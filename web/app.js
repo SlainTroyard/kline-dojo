@@ -54,7 +54,7 @@ let finished = false;
 let lastCategory = 'stock', lastParams = {};
 
 let chart = null, candle = null, volS = null, maS = {}, bollS = {}, bollBar = null, macdS = {}, kdjS = {};
-let coverRO = null;                       // 遮轴条 ResizeObserver（重建前 disconnect）
+let volChart = null, bollChart = null, macdChart = null, kdjChart = null;   // 独立小面板
 let trainThemeDirty = false;             // 看板页切主题后回训练页签需补重建
 let overlay = null;             // 训练会话内画线（不持久化）
 let pendingOrders = [];         // next_open 模式挂单 [{side:'buy'|'sell', shares}]
@@ -231,33 +231,51 @@ function settlePending() {
 }
 
 /* ---------------- 图表 ---------------- */
-/** 面板布局：BOLL 独立窗格（缩略K线+三轨）开启时压缩主图、各副图下移 */
-function applyTrainPaneLayout() {
-  const bollOn = !!tToggles.boll;
-  chart.priceScale('right').applyOptions({
-    scaleMargins: bollOn ? { top: 0.01, bottom: 0.51 } : { top: 0.02, bottom: 0.44 },
-  });
-  chart.priceScale('boll').applyOptions({
-    scaleMargins: { top: 0.51, bottom: 0.35 }, visible: false,
-  });
-  chart.priceScale('vol').applyOptions({
-    scaleMargins: bollOn ? { top: 0.68, bottom: 0.20 } : { top: 0.70, bottom: 0.22 },
-  });
-  chart.priceScale('macd').applyOptions({
-    scaleMargins: bollOn ? { top: 0.83, bottom: 0.09 } : { top: 0.82, bottom: 0.10 },
-  });
-  chart.priceScale('kdj').applyOptions({
-    scaleMargins: bollOn ? { top: 0.93, bottom: 0 } : { top: 0.94, bottom: 0 },
+const TRAIN_AXIS_W = 62;                 // 各面板右轴定宽 → 时间轴垂直对齐
+
+function mkTrainPane(elId) {
+  const T = window.BzTheme.colors();
+  return LightweightCharts.createChart($(elId), {
+    layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 10 },
+    grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
+    rightPriceScale: {
+      borderColor: T.line, minimumWidth: TRAIN_AXIS_W, maximumWidth: TRAIN_AXIS_W,
+      scaleMargins: { top: 0.12, bottom: 0.08 },
+    },
+    timeScale: { visible: false, borderColor: T.line, rightOffset: 8 },
+    crosshair: { mode: 0 },
+    autoSize: true,
+    handleScroll: false, handleScale: false,   // 小面板不响应交互，主面板单向同步
   });
 }
 
+/** 时间轴只挂最底部的可见小面板（训练时间轴默认隐藏，保持双盲） */
+function refreshTrainAxisOwner() {
+  const order = [
+    [bollChart, tToggles.boll], [volChart, tToggles.vol],
+    [macdChart, tToggles.macd], [kdjChart, tToggles.kdj],
+  ];
+  let owner = null;
+  for (const [c, on] of order) if (on) owner = c;
+  for (const [c] of order) {
+    c.timeScale().applyOptions({ visible: c === owner });
+  }
+}
+
 function buildTrainChart() {
-  if (chart) { chart.remove(); chart = null; }
+  for (const c of [chart, volChart, bollChart, macdChart, kdjChart]) {
+    if (c) { c.remove(); }
+  }
+  chart = bollChart = macdChart = kdjChart = volChart = null;
   const T = window.BzTheme.colors();
+  // 主面板：K线 + MA + 画线 + 买卖标记
   chart = LightweightCharts.createChart($('chart'), {
     layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 12 },
     grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
-    rightPriceScale: { borderColor: T.line, scaleMargins: { top: 0.02, bottom: 0.44 } },
+    rightPriceScale: {
+      borderColor: T.line, minimumWidth: TRAIN_AXIS_W, maximumWidth: TRAIN_AXIS_W,
+      scaleMargins: { top: 0.05, bottom: 0.05 },
+    },
     timeScale: { visible: false, borderColor: T.line, rightOffset: 8 },
     crosshair: { mode: 0 },
     autoSize: true,
@@ -266,12 +284,6 @@ function buildTrainChart() {
     upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
     wickUpColor: UP, wickDownColor: DOWN,
   });
-  volS = chart.addHistogramSeries({
-    priceScaleId: 'vol', priceFormat: { type: 'volume' },
-    color: T.volDown, priceLineVisible: false, lastValueVisible: false,
-  });
-  chart.priceScale('vol').applyOptions({ visible: false });
-
   maS = {};
   for (const m of MA_DEFS) {
     maS[m.p] = chart.addLineSeries({
@@ -279,48 +291,52 @@ function buildTrainChart() {
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
     });
   }
-    bollBar = chart.addBarSeries({
-    priceScaleId: 'boll',
-    upColor: UP, downColor: DOWN,
-    thinBars: true,                     // 竹线：细竖线=高低，左爪开/右爪收
+  // 小面板：BOLL / VOL / MACD / KDJ
+  bollChart = mkTrainPane('train-bollchart');
+  bollBar = bollChart.addBarSeries({
+    upColor: UP, downColor: DOWN, thinBars: true,
     priceLineVisible: false, lastValueVisible: false,
   });
   bollS = {
-    mid: chart.addLineSeries({ priceScaleId: 'boll', color: '#f0b90b', lineWidth: 1, lineStyle: 2, title: 'BOLL', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    up: chart.addLineSeries({ priceScaleId: 'boll', color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    low: chart.addLineSeries({ priceScaleId: 'boll', color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    mid: bollChart.addLineSeries({ color: '#f0b90b', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    up: bollChart.addLineSeries({ color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    low: bollChart.addLineSeries({ color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
   };
+  volChart = mkTrainPane('train-volchart');
+  volS = volChart.addHistogramSeries({
+    priceFormat: { type: 'volume' }, color: T.volDown,
+    priceLineVisible: false, lastValueVisible: false,
+  });
+  macdChart = mkTrainPane('train-macdchart');
   macdS = {
-    hist: chart.addHistogramSeries({ priceScaleId: 'macd', title: 'MACD', priceLineVisible: false, lastValueVisible: false }),
-    dif: chart.addLineSeries({ priceScaleId: 'macd', color: '#e0483e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    dea: chart.addLineSeries({ priceScaleId: 'macd', color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    hist: macdChart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false }),
+    dif: macdChart.addLineSeries({ color: '#e0483e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    dea: macdChart.addLineSeries({ color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
   };
-  chart.priceScale('macd').applyOptions({ visible: false });
+  kdjChart = mkTrainPane('train-kdjchart');
   kdjS = {
-    k: chart.addLineSeries({ priceScaleId: 'kdj', color: '#f0b90b', lineWidth: 1, title: 'KDJ', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    d: chart.addLineSeries({ priceScaleId: 'kdj', color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    j: chart.addLineSeries({ priceScaleId: 'kdj', color: '#c77dff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    k: kdjChart.addLineSeries({ color: '#f0b90b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    d: kdjChart.addLineSeries({ color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    j: kdjChart.addLineSeries({ color: '#c77dff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
   };
-  chart.priceScale('kdj').applyOptions({ visible: false });
-  applyTrainPaneLayout();
 
-  overlay = new window.Overlay(chart, candle, $('train-chart-wrap'), {
+  overlay = new window.Overlay(chart, candle, $('train-pane-main'), {
     onModeChange: syncTrainDrawBtns,
+  });
+  // 主面板 → 小面板：可视范围单向同步（小面板 handleScale 已关，无回环）
+  let syncing = false;
+  chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+    if (r && !syncing) {
+      syncing = true;
+      for (const c of [bollChart, volChart, macdChart, kdjChart]) {
+        try { c.timeScale().setVisibleLogicalRange(r); } catch { /* 空数据面板 */ }
+      }
+      syncing = false;
+    }
   });
   chart.subscribeClick((param) => { overlay.handleClick(param); });   // 训练画线本局有效，不持久化
   chart.subscribeCrosshairMove((param) => updateTrainLegend(param));
   window.__bzTrain = { chart, overlay };   // 调试/自动化测试用
-
-  // 遮住副图区背后的主轴刻度
-  $('train-chart-wrap').querySelectorAll('.axis-cover').forEach((e) => e.remove());
-  const cover = document.createElement('div');
-  cover.className = 'axis-cover';
-  $('train-chart-wrap').appendChild(cover);
-  const fitCover = () => { cover.style.width = (chart.priceScale('right').width() + 2) + 'px'; };
-  fitCover();
-  if (coverRO) coverRO.disconnect();            // 主题重建不累积 observer
-  coverRO = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(fitCover) : null;
-  if (coverRO) coverRO.observe($('chart'));
 
   applyTrainToggles(true);
 }
@@ -359,6 +375,8 @@ function updateTrainLegend(param) {
   const closes = bars.map((x) => x.c);
   const fmtVol = (v) => v >= 1e8 ? (v / 1e8).toFixed(2) + '亿' : v >= 1e4 ? (v / 1e4).toFixed(2) + '万' : String(Math.round(v));
   const sec = (txt, color) => txt ? `<span style="color:${color};margin-left:12px">${txt}</span>` : '';
+  const xv = {};                       // 小面板十字光标定位值
+  xv.vol = b.v;
   let html =
     `开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
     `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
@@ -372,6 +390,7 @@ function updateTrainLegend(param) {
   if (tToggles.macd) {
     const mc = window.Ind.macd(closes);
     const d = mc.dif[k], e = mc.dea[k], h = mc.hist[k];
+    xv.dif = d;
     if (d != null && e != null) {
       html += sec(`MACD <b style="color:${T.up}">${d.toFixed(2)}</b> ` +
         `<b style="color:${T.blue}">${e.toFixed(2)}</b> ` +
@@ -380,12 +399,14 @@ function updateTrainLegend(param) {
   }
   if (tToggles.kdj) {
     const kj = window.Ind.kdj(bars);
+    xv.k = kj.k[k];
     html += sec(`K <b style="color:#f0b90b">${kj.k[k].toFixed(1)}</b> ` +
       `D <b style="color:${T.blue}">${kj.d[k].toFixed(1)}</b> ` +
       `J <b style="color:#c77dff">${kj.j[k].toFixed(1)}</b>`, T.dim);
   }
   if (tToggles.boll) {
     const bo = window.Ind.boll(closes);
+    xv.bollMid = bo.mid[k];
     if (bo.mid[k] != null) {
       html += sec(`BOLL <b style="color:#f0b90b">${bo.mid[k].toFixed(2)}</b> ` +
         `<b style="color:${T.dim}">${bo.up[k].toFixed(2)}</b> ` +
@@ -393,6 +414,17 @@ function updateTrainLegend(param) {
     }
   }
   el.innerHTML = html;
+  // 主面板十字光标 → 各小面板
+  const tk = tsOf(b.d);
+  const setX = (c, series, v) => {
+    if (!c || !series) return;
+    if (param && param.time != null && v != null) c.setCrosshairPosition(v, tk, series);
+    else c.clearCrosshairPosition();
+  };
+  setX(bollChart, bollBar, xv.bollMid != null ? b.c : null);
+  setX(volChart, volS, tToggles.vol ? xv.vol : null);
+  setX(macdChart, macdS.dif, xv.dif);
+  setX(kdjChart, kdjS.k, xv.k);
 }
 
 function refillTrainIndicators(bars) {
@@ -472,14 +504,14 @@ function renderTrainChart(refit = false) {
 }
 
 function applyTrainToggles(skipRender = false) {
-  const vis = (s, on) => s.applyOptions({ visible: !!on });
-  for (const m of MA_DEFS) vis(maS[m.p], tToggles.ma);
-  vis(bollBar, tToggles.boll);
-  vis(bollS.mid, tToggles.boll); vis(bollS.up, tToggles.boll); vis(bollS.low, tToggles.boll);
-  vis(macdS.hist, tToggles.macd); vis(macdS.dif, tToggles.macd); vis(macdS.dea, tToggles.macd);
-  vis(kdjS.k, tToggles.kdj); vis(kdjS.d, tToggles.kdj); vis(kdjS.j, tToggles.kdj);
-  vis(volS, tToggles.vol);
-  if (chart) applyTrainPaneLayout();
+  for (const m of MA_DEFS) maS[m.p].applyOptions({ visible: !!tToggles.ma });
+  // 各指标独立小面板：显隐即面板显隐
+  const visPane = (id, on) => { const el = $(id); if (el) el.classList.toggle('hidden', !on); };
+  visPane('train-pane-boll', tToggles.boll);
+  visPane('train-pane-vol', tToggles.vol);
+  visPane('train-pane-macd', tToggles.macd);
+  visPane('train-pane-kdj', tToggles.kdj);
+  refreshTrainAxisOwner();
   document.querySelectorAll('[data-tt]').forEach((b) => {
     b.classList.toggle('on', !!tToggles[b.dataset.tt]);
   });

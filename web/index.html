@@ -165,9 +165,15 @@
     </span>
   </div>
 
-  <div class="chart-wrap train-chart-wrap" id="train-chart-wrap">
-    <div id="chart"></div>
-    <div id="train-legend" class="view-legend"></div>
+  <div class="panes train-panes" id="train-panes">
+    <div class="pane pane-main" id="train-pane-main">
+      <div id="chart"></div>
+      <div id="train-legend" class="view-legend"></div>
+    </div>
+    <div class="pane hidden" id="train-pane-boll"><span class="pane-tag">BOLL(20,2)</span><div id="train-bollchart"></div></div>
+    <div class="pane" id="train-pane-vol"><span class="pane-tag">VOL</span><div id="train-volchart"></div></div>
+    <div class="pane" id="train-pane-macd"><span class="pane-tag">MACD(12,26,9)</span><div id="train-macdchart"></div></div>
+    <div class="pane hidden" id="train-pane-kdj"><span class="pane-tag">KDJ(9,3,3)</span><div id="train-kdjchart"></div></div>
   </div>
   <div class="train-controls">
     <button id="btn-next" class="primary">下一根 ⏭</button>
@@ -275,9 +281,15 @@
           <button id="view-tpl-del" class="tg-btn" title="删除选中的模板">🗑</button>
         </span>
       </div>
-      <div class="chart-wrap view-chart-wrap" id="view-chart-wrap">
-        <div id="view-chart"></div>
-        <div id="view-legend" class="view-legend"></div>
+      <div class="panes" id="view-panes">
+        <div class="pane pane-main" id="view-pane-main">
+          <div id="view-chart"></div>
+          <div id="view-legend" class="view-legend"></div>
+        </div>
+        <div class="pane hidden" id="view-pane-boll"><span class="pane-tag">BOLL(20,2)</span><div id="view-bollchart"></div></div>
+        <div class="pane" id="view-pane-vol"><span class="pane-tag">VOL</span><div id="view-volchart"></div></div>
+        <div class="pane" id="view-pane-macd"><span class="pane-tag">MACD(12,26,9)</span><div id="view-macdchart"></div></div>
+        <div class="pane hidden" id="view-pane-kdj"><span class="pane-tag">KDJ(9,3,3)</span><div id="view-kdjchart"></div></div>
       </div>
       <canvas id="view-minimap" class="view-minimap" title="全历史缩略图：点击/拖动跳转可视区间"></canvas>
       <div id="view-sub-wrap" class="hidden">
@@ -348,9 +360,15 @@
           <button id="mkt-tpl-del" class="tg-btn" title="删除选中的模板">🗑</button>
         </span>
       </div>
-      <div class="chart-wrap view-chart-wrap" id="mkt-chart-wrap">
-        <div id="mkt-chart"></div>
-        <div id="mkt-legend" class="view-legend"></div>
+      <div class="panes" id="mkt-panes">
+        <div class="pane pane-main" id="mkt-pane-main">
+          <div id="mkt-chart"></div>
+          <div id="mkt-legend" class="view-legend"></div>
+        </div>
+        <div class="pane hidden" id="mkt-pane-boll"><span class="pane-tag">BOLL(20,2)</span><div id="mkt-bollchart"></div></div>
+        <div class="pane" id="mkt-pane-vol"><span class="pane-tag">VOL</span><div id="mkt-volchart"></div></div>
+        <div class="pane hidden" id="mkt-pane-macd"><span class="pane-tag">MACD(12,26,9)</span><div id="mkt-macdchart"></div></div>
+        <div class="pane hidden" id="mkt-pane-kdj"><span class="pane-tag">KDJ(9,3,3)</span><div id="mkt-kdjchart"></div></div>
       </div>
       <canvas id="mkt-minimap" class="view-minimap" title="全历史缩略图：点击/拖动跳转可视区间"></canvas>
       <div id="mkt-sub-wrap" class="hidden">

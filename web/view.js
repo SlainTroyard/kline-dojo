@@ -12,7 +12,8 @@ window.createBoard = function createBoard(cfg) {
   ];
 
   let inited = false;
-  let chart = null, candle = null, volS = null;
+  let chart = null, candle = null;
+  let volChart = null, bollChart = null, macdChart = null, kdjChart = null;   // 独立小面板
   let maS = {}, bollS = {}, bollBar = null, macdS = {}, kdjS = {};
   let overlay = null;
   let insts = [];
@@ -107,7 +108,6 @@ window.createBoard = function createBoard(cfg) {
     }
   }
   let minimap = null;
-  let coverRO = null;                     // 遮轴条 ResizeObserver（重建前 disconnect）
 
   /* ---------------- 联动副图：同标的异周期 / 另选标的对照 ---------------- */
   let syncOn = localStorage.getItem(lsKey('sync')) === '1';
@@ -118,15 +118,40 @@ window.createBoard = function createBoard(cfg) {
   let syncingVR = false;                 // 可视范围同步防回环
 
 
-  /* ---------------- 图表 ---------------- */
-  function buildChart() {
-    if (chart) { chart.remove(); chart = null; }
+  /* ---------------- 图表：主面板 + 指标小面板（各独立 chart，时间轴只在最底） ---------------- */
+  const AXIS_W = 62;                       // 各面板右轴定宽 → 时间轴垂直对齐
+
+  function mkPane(elId) {
     const T = window.BzTheme.colors();
+    return LightweightCharts.createChart($(elId), {
+      layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 10 },
+      grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
+      rightPriceScale: {
+        borderColor: T.line, minimumWidth: AXIS_W, maximumWidth: AXIS_W,
+        scaleMargins: { top: 0.12, bottom: 0.08 },
+      },
+      timeScale: { borderColor: T.line, visible: false, rightOffset: 5 },
+      crosshair: { mode: 0 },
+      autoSize: true,
+      handleScroll: false, handleScale: false,   // 小面板不响应交互，主面板单向同步
+    });
+  }
+
+  function buildChart() {
+    for (const c of [chart, volChart, bollChart, macdChart, kdjChart]) {
+      if (c) { c.remove(); }
+    }
+    chart = bollChart = macdChart = kdjChart = volChart = null;
+    const T = window.BzTheme.colors();
+    // 主面板：K线 + MA + 画线（时间轴隐藏，由最底小面板显示）
     chart = LightweightCharts.createChart($('chart'), {
       layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 12 },
       grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
-      rightPriceScale: { borderColor: T.line, scaleMargins: { top: 0.02, bottom: 0.44 } },
-      timeScale: { borderColor: T.line, timeVisible: false, rightOffset: 5 },
+      rightPriceScale: {
+        borderColor: T.line, minimumWidth: AXIS_W, maximumWidth: AXIS_W,
+        scaleMargins: { top: 0.05, bottom: 0.05 },
+      },
+      timeScale: { borderColor: T.line, visible: false, rightOffset: 5 },
       crosshair: { mode: 0 },
       autoSize: true,
     });
@@ -134,12 +159,6 @@ window.createBoard = function createBoard(cfg) {
       upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
       wickUpColor: UP, wickDownColor: DOWN,
     });
-    volS = chart.addHistogramSeries({
-      priceScaleId: 'vol', priceFormat: { type: 'volume' },
-      priceLineVisible: false, lastValueVisible: false,
-    });
-    chart.priceScale('vol').applyOptions({ visible: false });
-
     maS = {};
     for (const m of MA_DEFS) {
       maS[m.p] = chart.addLineSeries({
@@ -147,88 +166,82 @@ window.createBoard = function createBoard(cfg) {
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
     }
-      bollBar = chart.addBarSeries({
-      priceScaleId: 'boll',
-      upColor: UP, downColor: DOWN,
-      thinBars: true,                     // 竹线：细竖线=高低，左爪开/右爪收
+    // 小面板：BOLL（竹线+三轨）/ VOL / MACD / KDJ
+    bollChart = mkPane('bollchart');
+    bollBar = bollChart.addBarSeries({
+      upColor: UP, downColor: DOWN, thinBars: true,
       priceLineVisible: false, lastValueVisible: false,
     });
     bollS = {
-      mid: chart.addLineSeries({ priceScaleId: 'boll', color: '#f0b90b', lineWidth: 1, lineStyle: 2, title: 'BOLL', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      up: chart.addLineSeries({ priceScaleId: 'boll', color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      low: chart.addLineSeries({ priceScaleId: 'boll', color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      mid: bollChart.addLineSeries({ color: '#f0b90b', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      up: bollChart.addLineSeries({ color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      low: bollChart.addLineSeries({ color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
     };
+    volChart = mkPane('volchart');
+    volS = volChart.addHistogramSeries({
+      priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: false,
+    });
+    macdChart = mkPane('macdchart');
     macdS = {
-      hist: chart.addHistogramSeries({ priceScaleId: 'macd', title: 'MACD', priceLineVisible: false, lastValueVisible: false }),
-      dif: chart.addLineSeries({ priceScaleId: 'macd', color: '#e0483e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      dea: chart.addLineSeries({ priceScaleId: 'macd', color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      hist: macdChart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false }),
+      dif: macdChart.addLineSeries({ color: '#e0483e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      dea: macdChart.addLineSeries({ color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
     };
-    chart.priceScale('macd').applyOptions({ visible: false });
+    kdjChart = mkPane('kdjchart');
     kdjS = {
-      k: chart.addLineSeries({ priceScaleId: 'kdj', color: '#f0b90b', lineWidth: 1, title: 'KDJ', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      d: chart.addLineSeries({ priceScaleId: 'kdj', color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      j: chart.addLineSeries({ priceScaleId: 'kdj', color: '#c77dff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      k: kdjChart.addLineSeries({ color: '#f0b90b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      d: kdjChart.addLineSeries({ color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      j: kdjChart.addLineSeries({ color: '#c77dff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
     };
-    chart.priceScale('kdj').applyOptions({ visible: false });
-    applyPaneLayout();
 
-    overlay = new window.Overlay(chart, candle, $('chart-wrap'), {
+    overlay = new window.Overlay(chart, candle, $('pane-main'), {
       onModeChange: syncDrawBtns,
       onChange: saveLines,
     });
     if (!minimap) minimap = new Minimap();
     minimap.attach(chart);
-    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+    // 主面板 → 小面板：可视范围单向同步（小面板 handleScale 已关，无回环）
+    chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       minimap.redraw();
-      syncSubRange();                     // 主图可视范围 → 副图
+      syncSubRange();                     // 联动副图
+      if (r && !syncingVR) {
+        syncingVR = true;
+        for (const c of [bollChart, volChart, macdChart, kdjChart]) {
+          try { c.timeScale().setVisibleLogicalRange(r); } catch { /* 空数据面板 */ }
+        }
+        syncingVR = false;
+      }
     });
     chart.subscribeClick((param) => {
       if (overlay.handleClick(param)) saveLines();
     });
     chart.subscribeCrosshairMove((param) => {
-      updateLegend(param);
-      crosshairToSub(param);              // 十字光标联动
+      updateLegend(param);                // 内含小面板十字光标同步
+      crosshairToSub(param);
     });
     window.__bzView = { chart, overlay, minimap };   // 调试/自动化测试用
 
-    // 遮住副图区背后的主轴刻度（外推负值会误导）；主题重建时先清旧的
-    $('chart-wrap').querySelectorAll('.axis-cover').forEach((e) => e.remove());
-    const cover = document.createElement('div');
-    cover.className = 'axis-cover';
-    $('chart-wrap').appendChild(cover);
-    const fitCover = () => { cover.style.width = (chart.priceScale('right').width() + 2) + 'px'; };
-    fitCover();
-    if (coverRO) coverRO.disconnect();          // 主题重建不累积 observer
-    coverRO = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(fitCover) : null;
-    if (coverRO) coverRO.observe($('chart'));
-
     applyToggles();
+  }
+
+  /** 时间轴只挂最底部的可见小面板（分钟周期显示时分） */
+  function refreshAxisOwner() {
+    const order = [
+      [bollChart, toggles.boll], [volChart, toggles.vol],
+      [macdChart, toggles.macd], [kdjChart, toggles.kdj],
+    ];
+    let owner = null;
+    for (const [c, on] of order) if (on) owner = c;
+    const minute = MINUTE_PERIODS.includes(period);
+    for (const [c, on] of order) {
+      c.timeScale().applyOptions({ visible: c === owner, timeVisible: minute, secondsVisible: false });
+    }
   }
 
   /** 画线工具按钮高亮与 overlay.mode 同步（含画完线自动复位 none 的场景） */
   function syncDrawBtns() {
     root.querySelectorAll('[data-draw]').forEach((x) => {
       x.classList.toggle('on', x.dataset.draw === overlay.mode);
-    });
-  }
-
-  /** 面板布局：BOLL 独立窗格（缩略K线+三轨）开启时压缩主图、各副图下移 */
-  function applyPaneLayout() {
-    const bollOn = !!toggles.boll;
-    chart.priceScale('right').applyOptions({
-      scaleMargins: bollOn ? { top: 0.01, bottom: 0.51 } : { top: 0.02, bottom: 0.44 },
-    });
-    chart.priceScale('boll').applyOptions({
-      scaleMargins: { top: 0.51, bottom: 0.35 }, visible: false,
-    });
-    chart.priceScale('vol').applyOptions({
-      scaleMargins: bollOn ? { top: 0.68, bottom: 0.20 } : { top: 0.70, bottom: 0.22 },
-    });
-    chart.priceScale('macd').applyOptions({
-      scaleMargins: bollOn ? { top: 0.83, bottom: 0.09 } : { top: 0.82, bottom: 0.10 },
-    });
-    chart.priceScale('kdj').applyOptions({
-      scaleMargins: bollOn ? { top: 0.93, bottom: 0 } : { top: 0.94, bottom: 0 },
     });
   }
 
@@ -278,15 +291,14 @@ window.createBoard = function createBoard(cfg) {
     if (!chart || !curKey) return;
     if (!rawBars.length) { $('title').textContent = `${curName}：无数据`; return; }
     const T = window.BzTheme.colors();
-    const minute = MINUTE_PERIODS.includes(period);
     const bars = curBars();
-    chart.timeScale().applyOptions({ timeVisible: minute, secondsVisible: false });
     const tOf = (b) => (b.t != null ? b.t : b.d);       // 分钟 bar 用 unix ts，日线用日期串
     candle.setData(bars.map((b) => ({ time: tOf(b), open: b.o, high: b.h, low: b.l, close: b.c })));
     volS.setData(toggles.vol ? bars.map((b) => ({
       time: tOf(b), value: b.v,
       color: b.c >= b.o ? T.volUp : T.volDown,
     })) : []);
+    refreshAxisOwner();
     refillIndicators(bars);
 
     overlay.setBars(bars);
@@ -316,24 +328,16 @@ window.createBoard = function createBoard(cfg) {
   }
 
   function applyToggles() {
-    const vis = (s, on) => s.applyOptions({ visible: !!on });
-    for (const m of MA_DEFS) vis(maS[m.p], toggles.ma);
-    vis(bollBar, toggles.boll);
-    vis(bollS.mid, toggles.boll); vis(bollS.up, toggles.boll); vis(bollS.low, toggles.boll);
-    vis(macdS.hist, toggles.macd); vis(macdS.dif, toggles.macd); vis(macdS.dea, toggles.macd);
-    vis(kdjS.k, toggles.kdj); vis(kdjS.d, toggles.kdj); vis(kdjS.j, toggles.kdj);
-    vis(volS, toggles.vol);
-    applyPaneLayout();
-    // 关闭的指标清空数据，避免参与主轴 autoscale（BOLL 年K 可为负）
+    for (const m of MA_DEFS) maS[m.p].applyOptions({ visible: !!toggles.ma });
+    // 各指标独立小面板：显隐即面板显隐，时间轴重新挂到最底可见面板
+    const visPane = (id, on) => { const el = $(id); if (el) el.classList.toggle('hidden', !on); };
+    visPane('pane-boll', toggles.boll);
+    visPane('pane-vol', toggles.vol);
+    visPane('pane-macd', toggles.macd);
+    visPane('pane-kdj', toggles.kdj);
+    refreshAxisOwner();
+    // 关闭的指标清空数据（面板隐藏即可见性，清数据防内存与轴残留）
     if (rawBars.length) refillIndicators(curBars());
-    if (volS && rawBars.length) {
-      const T = window.BzTheme.colors();
-      const bars = curBars();
-      volS.setData(toggles.vol ? bars.map((b) => ({
-        time: b.d, value: b.v,
-        color: b.c >= b.o ? T.volUp : T.volDown,
-      })) : []);
-    }
     root.querySelectorAll('[data-tg]').forEach((b) => {
       b.classList.toggle('on', !!toggles[b.dataset.tg]);
     });
@@ -371,10 +375,12 @@ window.createBoard = function createBoard(cfg) {
         return v == null ? '' : `MA${m.p} <b>${v.toFixed(1)}</b>`;
       }).filter(Boolean).join(' '), T.dim);
     }
-    if (toggles.vol) html += sec(`VOL <b>${fmtVol(b.v)}</b>`, b.c >= b.o ? T.up : T.down);
+    const xv = {};                       // 小面板十字光标定位值（各面板用自身指标值）
+    if (toggles.vol) { xv.vol = b.v; html += sec(`VOL <b>${fmtVol(b.v)}</b>`, b.c >= b.o ? T.up : T.down); }
     if (toggles.macd) {
       const mc = window.Ind.macd(closes);
       const d = mc.dif[idx], e = mc.dea[idx], h = mc.hist[idx];
+      xv.dif = d;
       if (d != null && e != null) {
         html += sec(`MACD <b style="color:${T.up}">${d.toFixed(2)}</b> ` +
           `<b style="color:${T.blue}">${e.toFixed(2)}</b> ` +
@@ -383,12 +389,14 @@ window.createBoard = function createBoard(cfg) {
     }
     if (toggles.kdj) {
       const kj = window.Ind.kdj(bars);
+      xv.k = kj.k[idx];
       html += sec(`K <b style="color:#f0b90b">${kj.k[idx].toFixed(1)}</b> ` +
         `D <b style="color:${T.blue}">${kj.d[idx].toFixed(1)}</b> ` +
         `J <b style="color:#c77dff">${kj.j[idx].toFixed(1)}</b>`, T.dim);
     }
     if (toggles.boll) {
       const bo = window.Ind.boll(closes);
+      xv.bollMid = bo.mid[idx];
       if (bo.mid[idx] != null) {
         html += sec(`BOLL <b style="color:#f0b90b">${bo.mid[idx].toFixed(2)}</b> ` +
           `<b style="color:${T.dim}">${bo.up[idx].toFixed(2)}</b> ` +
@@ -396,6 +404,17 @@ window.createBoard = function createBoard(cfg) {
       }
     }
     el.innerHTML = html;
+    // 主面板十字光标 → 各小面板（无 param 时全部清除）
+    const tk = b.t != null ? b.t : b.d;
+    const setX = (c, series, v) => {
+      if (!c || !series) return;
+      if (param && param.time != null && v != null) c.setCrosshairPosition(v, tk, series);
+      else c.clearCrosshairPosition();
+    };
+    setX(bollChart, bollBar, xv.bollMid != null ? b.v : null);      // BOLL 面板定位到收盘价
+    setX(volChart, volS, xv.vol);
+    setX(macdChart, macdS.dif, xv.dif);
+    setX(kdjChart, kdjS.k, xv.k);
   }
 
   /* ---------------- 列表 / 选指 / 刷新 ---------------- */
