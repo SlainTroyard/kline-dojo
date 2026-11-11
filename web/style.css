@@ -1,21 +1,29 @@
 /* K线道场 KLineDojo · 主题化样式（A股惯例：红涨绿跌）
- * 主题由 theme.js 设置 <html data-theme=...>，四套：dark/light/blue/navy。
+ * 主题由 theme.js 设置 <html data-theme=...>，五套：dark/light/cream/blue/navy。
  */
 :root, [data-theme="dark"] {
   --bg: #0b0e14; --panel: #12161f; --panel2: #171c27; --line: #232a38;
-  --text: #d7dce6; --dim: #7b8494; --grid: #1a2130;
+  --text: #e6ebf4; --dim: #9aa4b8; --grid: #1a2130;
   --up: #e0483e; --down: #1fa06b;
   --accent: #f0b90b; --on-accent: #1a1a05;
   --toast-bg: #2a1520; --toast-text: #ffb4b4;
   --toast-ok-bg: #10231b; --toast-ok-text: #8fe6c0;
 }
 [data-theme="light"] {
-  --bg: #f5f6f8; --panel: #ffffff; --panel2: #f0f2f5; --line: #dfe3ea;
-  --text: #24292f; --dim: #6a737d; --grid: #e9ecf1;
+  --bg: #f4f5f7; --panel: #ffffff; --panel2: #eff1f4; --line: #e2e6eb;
+  --text: #2c333d; --dim: #707a86; --grid: #edeff2;
   --up: #d9382e; --down: #178f5f;
   --accent: #c8860a; --on-accent: #fffaf0;
   --toast-bg: #fdecee; --toast-text: #b3271d;
   --toast-ok-bg: #e8f7f0; --toast-ok-text: #0e7a52;
+}
+[data-theme="cream"] {
+  --bg: #efe9dc; --panel: #f8f4ea; --panel2: #f0ead9; --line: #ddd3bd;
+  --text: #3f3a2d; --dim: #857c66; --grid: #e9e2d0;
+  --up: #c73e3a; --down: #157f52;
+  --accent: #b8860b; --on-accent: #fffaf0;
+  --toast-bg: #f8e8e6; --toast-text: #a3271d;
+  --toast-ok-bg: #e6f2ea; --toast-ok-text: #0e7a52;
 }
 [data-theme="blue"] {
   --bg: #eef3fa; --panel: #ffffff; --panel2: #e7eef8; --line: #d3dfec;
@@ -329,8 +337,11 @@ select.tg-btn option { background: var(--panel); color: var(--text); }
   position: absolute; top: 8px; left: 10px; z-index: 6;
   font-size: 12px; color: var(--text); pointer-events: none;
   text-shadow: 0 1px 3px rgba(0,0,0,.5);
+  max-width: calc(100% - 90px);      /* 避开右侧价格轴 */
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
-[data-theme="light"] .view-legend, [data-theme="blue"] .view-legend { text-shadow: none; }
+.view-legend b { font-weight: 600; font-variant-numeric: tabular-nums; }
+[data-theme="light"] .view-legend, [data-theme="cream"] .view-legend, [data-theme="blue"] .view-legend { text-shadow: none; }
 
 /* ---------------- toast ---------------- */
 #toast {

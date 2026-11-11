@@ -53,16 +53,21 @@ let modalMode = null;
 let finished = false;
 let lastCategory = 'stock', lastParams = {};
 
-let chart = null, candle = null, volS = null, maS = {}, bollS = {}, macdS = {}, kdjS = {};
+let chart = null, candle = null, volS = null, maS = {}, bollS = {}, bollCandle = null, macdS = {}, kdjS = {};
+let coverRO = null;                       // 遮轴条 ResizeObserver（重建前 disconnect）
+let trainThemeDirty = false;             // 看板页切主题后回训练页签需补重建
 let overlay = null;             // 训练会话内画线（不持久化）
 let pendingOrders = [];         // next_open 模式挂单 [{side:'buy'|'sell', shares}]
 let lastAgg = [];               // 当前周期的聚合 bars（marker 吸附用）
 let revealChart = null, revealInfo = null;
 
 let trainPeriod = localStorage.getItem('bz_train_period') || 'D';
-const tToggles = Object.assign(
-  { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false },
-  JSON.parse(localStorage.getItem('bz_train_toggles') || '{}'));
+function loadToggles(key, defaults) {      // localStorage 坏值不炸全局（顶层执行无 catch 会挂死整页）
+  try { return Object.assign(defaults, JSON.parse(localStorage.getItem(key) || '{}')); }
+  catch { return defaults; }
+}
+const tToggles = loadToggles('bz_train_toggles',
+  { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false });
 
 let selectedCodes = new Map();  // 本局自选标的 code → name
 let watchlist = [];             // 我的自选 [{code,name}]（localStorage）
@@ -226,6 +231,26 @@ function settlePending() {
 }
 
 /* ---------------- 图表 ---------------- */
+/** 面板布局：BOLL 独立窗格（缩略K线+三轨）开启时压缩主图、各副图下移 */
+function applyTrainPaneLayout() {
+  const bollOn = !!tToggles.boll;
+  chart.priceScale('right').applyOptions({
+    scaleMargins: bollOn ? { top: 0.01, bottom: 0.58 } : { top: 0.02, bottom: 0.44 },
+  });
+  chart.priceScale('boll').applyOptions({
+    scaleMargins: { top: 0.44, bottom: 0.32 }, visible: false,
+  });
+  chart.priceScale('vol').applyOptions({
+    scaleMargins: bollOn ? { top: 0.71, bottom: 0.19 } : { top: 0.70, bottom: 0.22 },
+  });
+  chart.priceScale('macd').applyOptions({
+    scaleMargins: bollOn ? { top: 0.83, bottom: 0.09 } : { top: 0.82, bottom: 0.10 },
+  });
+  chart.priceScale('kdj').applyOptions({
+    scaleMargins: bollOn ? { top: 0.93, bottom: 0 } : { top: 0.94, bottom: 0 },
+  });
+}
+
 function buildTrainChart() {
   if (chart) { chart.remove(); chart = null; }
   const T = window.BzTheme.colors();
@@ -245,7 +270,7 @@ function buildTrainChart() {
     priceScaleId: 'vol', priceFormat: { type: 'volume' },
     color: T.volDown, priceLineVisible: false, lastValueVisible: false,
   });
-  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.70, bottom: 0.22 }, visible: false });
+  chart.priceScale('vol').applyOptions({ visible: false });
 
   maS = {};
   for (const m of MA_DEFS) {
@@ -254,28 +279,36 @@ function buildTrainChart() {
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
     });
   }
+  bollCandle = chart.addCandlestickSeries({
+    priceScaleId: 'boll',
+    upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
+    wickUpColor: UP, wickDownColor: DOWN,
+    priceLineVisible: false, lastValueVisible: false,
+  });
   bollS = {
-    mid: chart.addLineSeries({ color: '#f0b90b', lineWidth: 1, lineStyle: 2, title: 'BOLL中轨', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    up: chart.addLineSeries({ color: '#8892a6', lineWidth: 1, title: 'BOLL上轨', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    low: chart.addLineSeries({ color: '#8892a6', lineWidth: 1, title: 'BOLL下轨', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    mid: chart.addLineSeries({ priceScaleId: 'boll', color: '#f0b90b', lineWidth: 1, lineStyle: 2, title: 'BOLL', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    up: chart.addLineSeries({ priceScaleId: 'boll', color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    low: chart.addLineSeries({ priceScaleId: 'boll', color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
   };
   macdS = {
-    hist: chart.addHistogramSeries({ priceScaleId: 'macd', priceLineVisible: false, lastValueVisible: false }),
-    dif: chart.addLineSeries({ priceScaleId: 'macd', color: '#e0483e', lineWidth: 1, title: 'DIF', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    dea: chart.addLineSeries({ priceScaleId: 'macd', color: '#4a90e2', lineWidth: 1, title: 'DEA', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    hist: chart.addHistogramSeries({ priceScaleId: 'macd', title: 'MACD', priceLineVisible: false, lastValueVisible: false }),
+    dif: chart.addLineSeries({ priceScaleId: 'macd', color: '#e0483e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    dea: chart.addLineSeries({ priceScaleId: 'macd', color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
   };
-  chart.priceScale('macd').applyOptions({ scaleMargins: { top: 0.82, bottom: 0.10 }, visible: false });
+  chart.priceScale('macd').applyOptions({ visible: false });
   kdjS = {
-    k: chart.addLineSeries({ priceScaleId: 'kdj', color: '#f0b90b', lineWidth: 1, title: 'K', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    d: chart.addLineSeries({ priceScaleId: 'kdj', color: '#4a90e2', lineWidth: 1, title: 'D', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    j: chart.addLineSeries({ priceScaleId: 'kdj', color: '#c77dff', lineWidth: 1, title: 'J', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    k: chart.addLineSeries({ priceScaleId: 'kdj', color: '#f0b90b', lineWidth: 1, title: 'KDJ', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    d: chart.addLineSeries({ priceScaleId: 'kdj', color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    j: chart.addLineSeries({ priceScaleId: 'kdj', color: '#c77dff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
   };
-  chart.priceScale('kdj').applyOptions({ scaleMargins: { top: 0.94, bottom: 0 }, visible: false });
+  chart.priceScale('kdj').applyOptions({ visible: false });
+  applyTrainPaneLayout();
 
   overlay = new window.Overlay(chart, candle, $('train-chart-wrap'), {
     onModeChange: syncTrainDrawBtns,
   });
   chart.subscribeClick((param) => { overlay.handleClick(param); });   // 训练画线本局有效，不持久化
+  chart.subscribeCrosshairMove((param) => updateTrainLegend(param));
   window.__bzTrain = { chart, overlay };   // 调试/自动化测试用
 
   // 遮住副图区背后的主轴刻度
@@ -285,7 +318,9 @@ function buildTrainChart() {
   $('train-chart-wrap').appendChild(cover);
   const fitCover = () => { cover.style.width = (chart.priceScale('right').width() + 2) + 'px'; };
   fitCover();
-  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitCover).observe($('chart'));
+  if (coverRO) coverRO.disconnect();            // 主题重建不累积 observer
+  coverRO = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(fitCover) : null;
+  if (coverRO) coverRO.observe($('chart'));
 
   applyTrainToggles(true);
 }
@@ -308,6 +343,58 @@ function aggIndexOf(d) {
   return ans;
 }
 
+/** 训练页图例：OHLC（无日期，双盲）+ 各开启指标的当前值（十字光标跟随） */
+function updateTrainLegend(param) {
+  const el = $('train-legend');
+  if (!lastAgg.length || !S || idx < 0) { el.textContent = ''; return; }
+  const T = window.BzTheme.colors();
+  const bars = lastAgg;
+  let k = bars.length - 1;
+  if (param && param.time) {
+    const i = bars.findIndex((b) => tsOf(b.d) === param.time);
+    if (i >= 0) k = i;
+  }
+  const b = bars[k];
+  const chg = k > 0 ? (b.c / bars[k - 1].c - 1) * 100 : 0;
+  const closes = bars.map((x) => x.c);
+  const fmtVol = (v) => v >= 1e8 ? (v / 1e8).toFixed(2) + '亿' : v >= 1e4 ? (v / 1e4).toFixed(2) + '万' : String(Math.round(v));
+  const sec = (txt, color) => txt ? `<span style="color:${color};margin-left:12px">${txt}</span>` : '';
+  let html =
+    `开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
+    `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
+  if (tToggles.ma) {
+    html += sec(MA_DEFS.map((m) => {
+      const v = window.Ind.sma(closes, m.p)[k];
+      return v == null ? '' : `MA${m.p} <b>${v.toFixed(1)}</b>`;
+    }).filter(Boolean).join(' '), T.dim);
+  }
+  if (tToggles.vol) html += sec(`VOL <b>${fmtVol(b.v)}</b>`, b.c >= b.o ? T.up : T.down);
+  if (tToggles.macd) {
+    const mc = window.Ind.macd(closes);
+    const d = mc.dif[k], e = mc.dea[k], h = mc.hist[k];
+    if (d != null && e != null) {
+      html += sec(`MACD <b style="color:${T.up}">${d.toFixed(2)}</b> ` +
+        `<b style="color:${T.blue}">${e.toFixed(2)}</b> ` +
+        `<b style="color:${h >= 0 ? T.up : T.down}">${h.toFixed(2)}</b>`, T.dim);
+    }
+  }
+  if (tToggles.kdj) {
+    const kj = window.Ind.kdj(bars);
+    html += sec(`K <b style="color:#f0b90b">${kj.k[k].toFixed(1)}</b> ` +
+      `D <b style="color:${T.blue}">${kj.d[k].toFixed(1)}</b> ` +
+      `J <b style="color:#c77dff">${kj.j[k].toFixed(1)}</b>`, T.dim);
+  }
+  if (tToggles.boll) {
+    const bo = window.Ind.boll(closes);
+    if (bo.mid[k] != null) {
+      html += sec(`BOLL <b style="color:#f0b90b">${bo.mid[k].toFixed(2)}</b> ` +
+        `<b style="color:${T.dim}">${bo.up[k].toFixed(2)}</b> ` +
+        `<b style="color:${T.dim}">${bo.low[k].toFixed(2)}</b>`, T.dim);
+    }
+  }
+  el.innerHTML = html;
+}
+
 function refillTrainIndicators(bars) {
   const closes = bars.map((b) => b.c);
   const line = (arr) => arr.map((v, i) => (v == null ? null : { time: tsOf(bars[i].d), value: v })).filter(Boolean);
@@ -317,10 +404,12 @@ function refillTrainIndicators(bars) {
   }
   if (tToggles.boll) {
     const bo = window.Ind.boll(closes);
+    bollCandle.setData(bars.map((b) => ({ time: tsOf(b.d), open: b.o, high: b.h, low: b.l, close: b.c })));
     bollS.mid.setData(line(bo.mid));
     bollS.up.setData(line(bo.up));
     bollS.low.setData(line(bo.low));
   } else {
+    bollCandle.setData([]);
     bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
   }
   if (tToggles.macd) {
@@ -379,15 +468,18 @@ function renderTrainChart(refit = false) {
 
   if (vr) chart.timeScale().setVisibleLogicalRange(vr);
   else chart.timeScale().fitContent();
+  updateTrainLegend(null);
 }
 
 function applyTrainToggles(skipRender = false) {
   const vis = (s, on) => s.applyOptions({ visible: !!on });
   for (const m of MA_DEFS) vis(maS[m.p], tToggles.ma);
+  vis(bollCandle, tToggles.boll);
   vis(bollS.mid, tToggles.boll); vis(bollS.up, tToggles.boll); vis(bollS.low, tToggles.boll);
   vis(macdS.hist, tToggles.macd); vis(macdS.dif, tToggles.macd); vis(macdS.dea, tToggles.macd);
   vis(kdjS.k, tToggles.kdj); vis(kdjS.d, tToggles.kdj); vis(kdjS.j, tToggles.kdj);
   vis(volS, tToggles.vol);
+  if (chart) applyTrainPaneLayout();
   document.querySelectorAll('[data-tt]').forEach((b) => {
     b.classList.toggle('on', !!tToggles[b.dataset.tt]);
   });
@@ -477,6 +569,8 @@ async function newSession(category, params) {
   pos = { shares: 0, free: 0, frozen: 0, costBasis: 0 };
   trades = []; markers = []; equityCurve = []; roundPnl = 0; roundTrips = [];
   pendingOrders = [];
+  revealInfo = null;                       // 上一局的揭晓图不带入新局（切主题会按 bars×dates 重画）
+  if (revealChart) { revealChart.remove(); revealChart = null; }
   equityCurve.push({ i: idx, equity: cash });
   startedAt = Date.now();
   finished = false;
@@ -891,12 +985,38 @@ function initTheme() {
   sel.value = window.BzTheme.get();
   sel.onchange = () => window.BzTheme.apply(sel.value);
   window.BzTheme.onChange(() => {
-    if (chart && S && !$('screen-train').classList.contains('hidden')) {
-      buildTrainChart();
-      renderTrainChart();
+    if (chart && S && !$('app-train').classList.contains('hidden') &&
+        !$('screen-train').classList.contains('hidden')) {
+      rebuildTrainTheme();
+    } else {
+      trainThemeDirty = true;             // 看板页切的：回训练页签时补重建
     }
     if (revealChart && revealInfo) renderRevealChart();
   });
+  // 从看板切回训练页签时，补上主题变更期间欠下的重建
+  window.addEventListener('bz-tab-train', () => {
+    if (trainThemeDirty && chart && S && !$('screen-train').classList.contains('hidden')) {
+      trainThemeDirty = false;
+      rebuildTrainTheme();
+    }
+  });
+}
+
+/** 主题重建训练图：画线/撤销栈快照恢复（训练画线本局有效不持久化，丢了无法找回） */
+function rebuildTrainTheme() {
+  const saved = overlay ? {
+    lines: overlay.lines.slice(),
+    undo: overlay.undoStack.slice(),
+    redo: overlay.redoStack.slice(),
+  } : null;
+  buildTrainChart();
+  if (overlay && saved) {
+    overlay.lines = saved.lines;
+    overlay.undoStack = saved.undo;
+    overlay.redoStack = saved.redo;
+    overlay.redraw();
+  }
+  renderTrainChart();
 }
 
 /* ---------------- 事件绑定 ---------------- */
@@ -967,12 +1087,19 @@ function bind() {
   const TPL_KEY = 'bz_tpl_train';
   const tpls = () => { try { return JSON.parse(localStorage.getItem(TPL_KEY) || '{}'); } catch { return {}; } };
   const refreshTplSel = () => {
-    $('train-tpl-sel').innerHTML = '<option value="">模板…</option>' +
-      Object.keys(tpls()).map((k) => `<option value="${k}">${k}</option>`).join('');
+    const sel = $('train-tpl-sel');
+    sel.textContent = '';                  // DOM 构建：模板名自由输入不拼 HTML
+    for (const k of ['', ...Object.keys(tpls())]) {
+      const o = document.createElement('option');
+      o.value = k;
+      o.textContent = k || '模板…';
+      sel.appendChild(o);
+    }
   };
   refreshTplSel();
   $('train-tpl-save').onclick = () => {
     window.bzPrompt('模板名称：', '', (name) => {
+      name = name.slice(0, 40);
       if (!name) return;
       const m = tpls();
       m[name] = { period: trainPeriod, toggles: { ...tToggles } };
@@ -1030,7 +1157,9 @@ function bind() {
       if (e.key === 'Enter') $('modal-ok').click();
       return;
     }
-    if ($('screen-train').classList.contains('hidden')) return;
+    // 双重守卫：在看板页签（app-train 隐藏）或训练模块的非对局屏（开始/结算）都不响应
+    if ($('app-train').classList.contains('hidden') ||
+        $('screen-train').classList.contains('hidden')) return;
     // Ctrl 组合键只走撤销/重做（训练热键单键触发，避免 Ctrl+B/S 误开交易弹窗）
     if (e.ctrlKey || e.metaKey) {
       if (e.code === 'KeyZ' && !e.shiftKey) { overlay && overlay.undo(); }

@@ -9,15 +9,18 @@ window.View = (() => {
 
   let inited = false;
   let chart = null, candle = null, volS = null;
-  let maS = {}, bollS = {}, macdS = {}, kdjS = {};
+  let maS = {}, bollS = {}, bollCandle = null, macdS = {}, kdjS = {};
   let overlay = null;
   let insts = [];
   let curKey = null, curName = '';
   let rawBars = [];                       // 全量日线
   let period = localStorage.getItem('bz_view_period') || 'D';
-  const toggles = Object.assign(
-    { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false },
-    JSON.parse(localStorage.getItem('bz_view_toggles') || '{}'));
+  function loadToggles(key, defaults) {    // localStorage 坏值不炸整个看板模块
+    try { return Object.assign(defaults, JSON.parse(localStorage.getItem(key) || '{}')); }
+    catch { return defaults; }
+  }
+  const toggles = loadToggles('bz_view_toggles',
+    { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false });
 
   /* ---------------- 小地图：全历史缩略条（点击/拖动跳转可视区间） ---------------- */
   class Minimap {
@@ -97,6 +100,7 @@ window.View = (() => {
     }
   }
   let minimap = null;
+  let coverRO = null;                     // 遮轴条 ResizeObserver（重建前 disconnect）
 
   /* ---------------- 联动副图：同标的异周期 / 另选标的对照 ---------------- */
   let syncOn = localStorage.getItem('bz_view_sync') === '1';
@@ -128,9 +132,7 @@ window.View = (() => {
       priceScaleId: 'vol', priceFormat: { type: 'volume' },
       priceLineVisible: false, lastValueVisible: false,
     });
-    chart.priceScale('vol').applyOptions({
-      scaleMargins: { top: 0.70, bottom: 0.22 }, visible: false,
-    });
+    chart.priceScale('vol').applyOptions({ visible: false });
 
     maS = {};
     for (const m of MA_DEFS) {
@@ -139,27 +141,30 @@ window.View = (() => {
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
     }
+    bollCandle = chart.addCandlestickSeries({
+      priceScaleId: 'boll',
+      upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
+      wickUpColor: UP, wickDownColor: DOWN,
+      priceLineVisible: false, lastValueVisible: false,
+    });
     bollS = {
-      mid: chart.addLineSeries({ color: '#f0b90b', lineWidth: 1, lineStyle: 2, title: 'BOLL中轨', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      up: chart.addLineSeries({ color: '#8892a6', lineWidth: 1, title: 'BOLL上轨', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      low: chart.addLineSeries({ color: '#8892a6', lineWidth: 1, title: 'BOLL下轨', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      mid: chart.addLineSeries({ priceScaleId: 'boll', color: '#f0b90b', lineWidth: 1, lineStyle: 2, title: 'BOLL', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      up: chart.addLineSeries({ priceScaleId: 'boll', color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      low: chart.addLineSeries({ priceScaleId: 'boll', color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
     };
     macdS = {
-      hist: chart.addHistogramSeries({ priceScaleId: 'macd', priceLineVisible: false, lastValueVisible: false }),
-      dif: chart.addLineSeries({ priceScaleId: 'macd', color: '#e0483e', lineWidth: 1, title: 'DIF', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      dea: chart.addLineSeries({ priceScaleId: 'macd', color: '#4a90e2', lineWidth: 1, title: 'DEA', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      hist: chart.addHistogramSeries({ priceScaleId: 'macd', title: 'MACD', priceLineVisible: false, lastValueVisible: false }),
+      dif: chart.addLineSeries({ priceScaleId: 'macd', color: '#e0483e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      dea: chart.addLineSeries({ priceScaleId: 'macd', color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
     };
-    chart.priceScale('macd').applyOptions({
-      scaleMargins: { top: 0.82, bottom: 0.10 }, visible: false,
-    });
+    chart.priceScale('macd').applyOptions({ visible: false });
     kdjS = {
-      k: chart.addLineSeries({ priceScaleId: 'kdj', color: '#f0b90b', lineWidth: 1, title: 'K', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      d: chart.addLineSeries({ priceScaleId: 'kdj', color: '#4a90e2', lineWidth: 1, title: 'D', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      j: chart.addLineSeries({ priceScaleId: 'kdj', color: '#c77dff', lineWidth: 1, title: 'J', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      k: chart.addLineSeries({ priceScaleId: 'kdj', color: '#f0b90b', lineWidth: 1, title: 'KDJ', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      d: chart.addLineSeries({ priceScaleId: 'kdj', color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      j: chart.addLineSeries({ priceScaleId: 'kdj', color: '#c77dff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
     };
-    chart.priceScale('kdj').applyOptions({
-      scaleMargins: { top: 0.94, bottom: 0 }, visible: false,
-    });
+    chart.priceScale('kdj').applyOptions({ visible: false });
+    applyPaneLayout();
 
     overlay = new window.Overlay(chart, candle, $('view-chart-wrap'), {
       onModeChange: syncDrawBtns,
@@ -187,7 +192,9 @@ window.View = (() => {
     $('view-chart-wrap').appendChild(cover);
     const fitCover = () => { cover.style.width = (chart.priceScale('right').width() + 2) + 'px'; };
     fitCover();
-    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitCover).observe($('view-chart'));
+    if (coverRO) coverRO.disconnect();          // 主题重建不累积 observer
+    coverRO = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(fitCover) : null;
+    if (coverRO) coverRO.observe($('view-chart'));
 
     applyToggles();
   }
@@ -196,6 +203,26 @@ window.View = (() => {
   function syncDrawBtns() {
     document.querySelectorAll('[data-draw]').forEach((x) => {
       x.classList.toggle('on', x.dataset.draw === overlay.mode);
+    });
+  }
+
+  /** 面板布局：BOLL 独立窗格（缩略K线+三轨）开启时压缩主图、各副图下移 */
+  function applyPaneLayout() {
+    const bollOn = !!toggles.boll;
+    chart.priceScale('right').applyOptions({
+      scaleMargins: bollOn ? { top: 0.01, bottom: 0.58 } : { top: 0.02, bottom: 0.44 },
+    });
+    chart.priceScale('boll').applyOptions({
+      scaleMargins: { top: 0.44, bottom: 0.32 }, visible: false,
+    });
+    chart.priceScale('vol').applyOptions({
+      scaleMargins: bollOn ? { top: 0.71, bottom: 0.19 } : { top: 0.70, bottom: 0.22 },
+    });
+    chart.priceScale('macd').applyOptions({
+      scaleMargins: bollOn ? { top: 0.83, bottom: 0.09 } : { top: 0.82, bottom: 0.10 },
+    });
+    chart.priceScale('kdj').applyOptions({
+      scaleMargins: bollOn ? { top: 0.93, bottom: 0 } : { top: 0.94, bottom: 0 },
     });
   }
 
@@ -211,10 +238,12 @@ window.View = (() => {
     }
     if (toggles.boll) {
       const bo = window.Ind.boll(closes);
+      bollCandle.setData(bars.map((b) => ({ time: b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
       bollS.mid.setData(line(bo.mid));
       bollS.up.setData(line(bo.up));
       bollS.low.setData(line(bo.low));
     } else {
+      bollCandle.setData([]);
       bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
     }
     if (toggles.macd) {
@@ -240,6 +269,7 @@ window.View = (() => {
 
   function renderAll() {
     if (!chart || !curKey) return;
+    if (!rawBars.length) { $('view-title').textContent = `${curName}：无数据`; return; }
     const T = window.BzTheme.colors();
     const bars = window.Ind.aggregate(rawBars, period);
     candle.setData(bars.map((b) => ({ time: b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
@@ -267,10 +297,12 @@ window.View = (() => {
   function applyToggles() {
     const vis = (s, on) => s.applyOptions({ visible: !!on });
     for (const m of MA_DEFS) vis(maS[m.p], toggles.ma);
+    vis(bollCandle, toggles.boll);
     vis(bollS.mid, toggles.boll); vis(bollS.up, toggles.boll); vis(bollS.low, toggles.boll);
     vis(macdS.hist, toggles.macd); vis(macdS.dif, toggles.macd); vis(macdS.dea, toggles.macd);
     vis(kdjS.k, toggles.kdj); vis(kdjS.d, toggles.kdj); vis(kdjS.j, toggles.kdj);
     vis(volS, toggles.vol);
+    applyPaneLayout();
     // 关闭的指标清空数据，避免参与主轴 autoscale（BOLL 年K 可为负）
     if (rawBars.length) refillIndicators(window.Ind.aggregate(rawBars, period));
     if (volS && rawBars.length) {
@@ -291,6 +323,9 @@ window.View = (() => {
   }
 
   /* ---------------- 图例 ---------------- */
+  const fmtVol = (v) => v >= 1e8 ? (v / 1e8).toFixed(2) + '亿'
+    : v >= 1e4 ? (v / 1e4).toFixed(2) + '万' : String(Math.round(v));
+
   function updateLegend(param) {
     const el = $('view-legend');
     if (!rawBars.length) { el.textContent = ''; return; }
@@ -304,16 +339,42 @@ window.View = (() => {
     const b = bars[idx];
     const chg = idx > 0 ? (b.c / bars[idx - 1].c - 1) * 100 : 0;
     const closes = bars.map((x) => x.c);
-    const maTxt = MA_DEFS
-      .map((m) => {
-        const v = window.Ind.sma(closes, m.p)[idx];
-        return v == null ? '' : `MA${m.p} ${v.toFixed(1)}`;
-      }).filter(Boolean).join('  ');
-    el.innerHTML =
+    const sec = (txt, color) => txt ? `<span style="color:${color};margin-left:12px">${txt}</span>` : '';
+    let html =
       `<b style="color:${chg >= 0 ? T.up : T.down}">${curName} ${b.d}</b> ` +
       `开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
-      `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>` +
-      (toggles.ma ? `  <span style="color:${T.dim}">${maTxt}</span>` : '');
+      `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
+    if (toggles.ma) {
+      html += sec(MA_DEFS.map((m) => {
+        const v = window.Ind.sma(closes, m.p)[idx];
+        return v == null ? '' : `MA${m.p} <b>${v.toFixed(1)}</b>`;
+      }).filter(Boolean).join(' '), T.dim);
+    }
+    if (toggles.vol) html += sec(`VOL <b>${fmtVol(b.v)}</b>`, b.c >= b.o ? T.up : T.down);
+    if (toggles.macd) {
+      const mc = window.Ind.macd(closes);
+      const d = mc.dif[idx], e = mc.dea[idx], h = mc.hist[idx];
+      if (d != null && e != null) {
+        html += sec(`MACD <b style="color:${T.up}">${d.toFixed(2)}</b> ` +
+          `<b style="color:${T.blue}">${e.toFixed(2)}</b> ` +
+          `<b style="color:${h >= 0 ? T.up : T.down}">${h.toFixed(2)}</b>`, T.dim);
+      }
+    }
+    if (toggles.kdj) {
+      const kj = window.Ind.kdj(bars);
+      html += sec(`K <b style="color:#f0b90b">${kj.k[idx].toFixed(1)}</b> ` +
+        `D <b style="color:${T.blue}">${kj.d[idx].toFixed(1)}</b> ` +
+        `J <b style="color:#c77dff">${kj.j[idx].toFixed(1)}</b>`, T.dim);
+    }
+    if (toggles.boll) {
+      const bo = window.Ind.boll(closes);
+      if (bo.mid[idx] != null) {
+        html += sec(`BOLL <b style="color:#f0b90b">${bo.mid[idx].toFixed(2)}</b> ` +
+          `<b style="color:${T.dim}">${bo.up[idx].toFixed(2)}</b> ` +
+          `<b style="color:${T.dim}">${bo.low[idx].toFixed(2)}</b>`, T.dim);
+      }
+    }
+    el.innerHTML = html;
   }
 
   /* ---------------- 列表 / 选指 / 刷新 ---------------- */
@@ -321,10 +382,17 @@ window.View = (() => {
     const d = await fetch('/api/index/list').then((r) => r.json());
     insts = d.instruments || [];
     renderList();
-    // 联动副图的标的下拉（bind 时 insts 尚空，这里填充）
-    $('view-sub-key').innerHTML = '<option value="">同主图</option>' +
-      ['A股', '海外'].flatMap((g) => insts.filter((i) => i.group === g))
-        .map((i) => `<option value="${i.key}">${i.name}</option>`).join('');
+    // 联动副图的标的下拉（bind 时 insts 尚空，这里填充；DOM 构建 + 回设当前选择）
+    const subSel = $('view-sub-key');
+    subSel.textContent = '';
+    for (const [val, label] of [['', '同主图'], ...['A股', '海外']
+      .flatMap((g) => insts.filter((i) => i.group === g)).map((i) => [i.key, i.name])]) {
+      const o = document.createElement('option');
+      o.value = val;
+      o.textContent = label;
+      subSel.appendChild(o);
+    }
+    subSel.value = subKey;               // 重建 options 后恢复用户选择
   }
 
   function renderList() {
@@ -350,21 +418,25 @@ window.View = (() => {
     }
   }
 
+  let selSeq = 0, subSeq = 0;            // 竞态守卫：晚到的旧响应不覆盖新选择
+
   async function select(key) {
     curKey = key;
+    const seq = ++selSeq;
     const it = insts.find((x) => x.key === key);
     curName = it ? it.name : key;
     document.querySelectorAll('.list-item').forEach((e) => e.classList.toggle('active', e.dataset.key === key));
     $('view-title').textContent = `${curName} 加载中…`;
     try {
       const d = await fetch('/api/index/kline?key=' + encodeURIComponent(key)).then((r) => r.json());
+      if (seq !== selSeq) return;        // 期间用户又切了别的标的
       if (d.error) throw new Error(d.error);
       rawBars = d.bars.map((b) => ({ d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
       overlay.setLines(loadLines());
       renderAll();
       if (syncOn) loadSub(subKey || curKey);   // 联动：主图换标的 → 副图跟随（同主图模式）
     } catch (e) {
-      $('view-title').textContent = `${curName} 加载失败：${e.message}`;
+      if (seq === selSeq) $('view-title').textContent = `${curName} 加载失败：${e.message}`;
     }
   }
 
@@ -376,6 +448,8 @@ window.View = (() => {
       await fetch('/api/index/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       await loadList();
       if (curKey) await select(curKey);
+    } catch (e) {
+      $('view-title').textContent = `同步失败：${e.message}`;
     } finally {
       btn.disabled = false;
       btn.textContent = '⟳ 同步数据';
@@ -418,15 +492,17 @@ window.View = (() => {
   /** 副图数据加载：key 为指数 key；渲染聚合周期 + MA5/20 */
   async function loadSub(key) {
     if (!subChart) return;
+    const seq = ++subSeq;
     const it = insts.find((x) => x.key === key);
     $('view-sub-title').textContent = `${it ? it.name : key} · ${key} 加载中…`;
     try {
       const d = await fetch('/api/index/kline?key=' + encodeURIComponent(key)).then((r) => r.json());
+      if (seq !== subSeq) return;        // 期间副图标的又被改选
       if (d.error) throw new Error(d.error);
       subRaw = d.bars.map((b) => ({ d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
       renderSub();
     } catch (e) {
-      $('view-sub-title').textContent = `${it ? it.name : key} 加载失败：${e.message}`;
+      if (seq === subSeq) $('view-sub-title').textContent = `${it ? it.name : key} 加载失败：${e.message}`;
     }
   }
 
@@ -518,8 +594,14 @@ window.View = (() => {
     try { return JSON.parse(localStorage.getItem(TPL_KEY) || '{}'); } catch { return {}; }
   }
   function refreshTplSel() {
-    $('view-tpl-sel').innerHTML = '<option value="">模板…</option>' +
-      Object.keys(tpls()).map((k) => `<option value="${k}">${k}</option>`).join('');
+    const sel = $('view-tpl-sel');
+    sel.textContent = '';                  // DOM 构建：模板名自由输入不拼 HTML
+    for (const k of ['', ...Object.keys(tpls())]) {
+      const o = document.createElement('option');
+      o.value = k;
+      o.textContent = k || '模板…';
+      sel.appendChild(o);
+    }
   }
   function applyTpl(t) {
     if (t.period) {
@@ -578,6 +660,7 @@ window.View = (() => {
     refreshTplSel();
     $('view-tpl-save').onclick = () => {
       window.bzPrompt('模板名称：', '', (name) => {
+        name = name.slice(0, 40);
         if (!name) return;
         const m = tpls();
         m[name] = { period, toggles: { ...toggles } };
@@ -600,7 +683,7 @@ window.View = (() => {
     };
 
     // 顶部导航：训练 / 看板
-    $('nav-train').onclick = () => switchTab('train');
+    $('nav-train').onclick = () => { switchTab('train'); window.dispatchEvent(new Event('bz-tab-train')); };
     $('nav-view').onclick = () => switchTab('view');
 
     // 撤销/重做快捷键（仅看板页签激活时生效；输入框内不拦）
@@ -619,7 +702,9 @@ window.View = (() => {
     $('nav-view').classList.toggle('active', which === 'view');
     if (which === 'view') {
       if (!chart) buildChart();          // 首次进入且容器可见时建图
-      if (!insts.length) loadList().then(() => { if (!curKey && insts.length) select('sh000300'); });
+      if (!insts.length) loadList()
+        .then(() => { if (!curKey && insts.length) select('sh000300'); })
+        .catch((e) => { $('view-title').textContent = `列表加载失败：${e.message}`; });
       if (syncOn && !subChart) applySync(true);   // 恢复上次的联动状态
     }
   }

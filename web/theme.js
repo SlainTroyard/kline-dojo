@@ -8,7 +8,7 @@ window.BzTheme = (() => {
     dark: {
       label: '暗黑',
       bg: '#0b0e14', panel: '#12161f', panel2: '#171c27', line: '#232a38',
-      text: '#d7dce6', dim: '#7b8494', grid: '#1a2130',
+      text: '#e6ebf4', dim: '#9aa4b8', grid: '#1a2130',
       up: '#e0483e', down: '#1fa06b', accent: '#f0b90b', onAccent: '#1a1a05',
       blue: '#4a90e2', trend: '#4a90e2', hline: '#e0483e',
       fib: '#c77dff', channel: '#ffa94d', rect: '#8892a6', note: '#f0b90b',
@@ -20,8 +20,8 @@ window.BzTheme = (() => {
     },
     light: {
       label: '明亮',
-      bg: '#f5f6f8', panel: '#ffffff', panel2: '#f0f2f5', line: '#dfe3ea',
-      text: '#24292f', dim: '#6a737d', grid: '#e9ecf1',
+      bg: '#f4f5f7', panel: '#ffffff', panel2: '#eff1f4', line: '#e2e6eb',
+      text: '#2c333d', dim: '#707a86', grid: '#edeff2',
       up: '#d9382e', down: '#178f5f', accent: '#c8860a', onAccent: '#fffaf0',
       blue: '#2f6fd0', trend: '#2f6fd0', hline: '#d9382e',
       fib: '#7c3aed', channel: '#b45309', rect: '#6a737d', note: '#92660a',
@@ -30,6 +30,19 @@ window.BzTheme = (() => {
       volUp: 'rgba(217,56,46,.4)', volDown: 'rgba(23,143,95,.4)',
       macdUp: 'rgba(217,56,46,.65)', macdDown: 'rgba(23,143,95,.65)',
       toastBg: '#fdecee', toastText: '#b3271d', toastOkBg: '#e8f7f0', toastOkText: '#0e7a52',
+    },
+    cream: {
+      label: '米色',
+      bg: '#efe9dc', panel: '#f8f4ea', panel2: '#f0ead9', line: '#ddd3bd',
+      text: '#3f3a2d', dim: '#857c66', grid: '#e9e2d0',
+      up: '#c73e3a', down: '#157f52', accent: '#b8860b', onAccent: '#fffaf0',
+      blue: '#3a6ea5', trend: '#3a6ea5', hline: '#c73e3a',
+      fib: '#7c5cd6', channel: '#a16207', rect: '#857c66', note: '#8a6d0a',
+      chanBi: '#00798c', chanZs: 'rgba(184,134,11,.10)', chanZsBorder: 'rgba(184,134,11,.6)',
+      chanDuan: '#c2540a',
+      volUp: 'rgba(199,62,58,.4)', volDown: 'rgba(21,127,82,.4)',
+      macdUp: 'rgba(199,62,58,.65)', macdDown: 'rgba(21,127,82,.65)',
+      toastBg: '#f8e8e6', toastText: '#a3271d', toastOkBg: '#e6f2ea', toastOkText: '#0e7a52',
     },
     blue: {
       label: '白蓝',
@@ -59,7 +72,8 @@ window.BzTheme = (() => {
     },
   };
 
-  let current = localStorage.getItem('bz_theme') || 'dark';
+  const _saved = localStorage.getItem('bz_theme');
+  let current = THEMES[_saved] ? _saved : 'dark';   // 坏值回退，避免 colors() 返回 undefined
   const listeners = [];
 
   function get() { return current; }
@@ -71,7 +85,7 @@ window.BzTheme = (() => {
     current = name;
     localStorage.setItem('bz_theme', name);
     document.documentElement.setAttribute('data-theme', name);
-    if (!silent) listeners.forEach((f) => { try { f(name); } catch (e) { /* 单个失败不阻断 */ } });
+    if (!silent) listeners.forEach((f) => { try { f(name); } catch (e) { console.error('theme listener error', e); /* 单个失败不阻断 */ } });
   }
 
   function onChange(f) { listeners.push(f); }

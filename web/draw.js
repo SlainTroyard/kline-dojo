@@ -48,6 +48,9 @@ window.bzPrompt = (msg, def, cb) => {
 };
 
 window.Overlay = class Overlay {
+  /** 容器 → 现存实例：主题重建前 destroy 旧实例（disconnect ResizeObserver） */
+  static _byContainer = new Map();
+
   /**
    * @param chart lightweight-charts 实例
    * @param series 主图 candlestick series（价格坐标转换）
@@ -70,17 +73,28 @@ window.Overlay = class Overlay {
     this.redoStack = [];
 
     const cvs = document.createElement('canvas');
+    cvs.className = 'bz-overlay';
     cvs.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;';
     container.style.position = 'relative';
+    // 主题重建等场景会再次 new Overlay：destroy 旧实例（RO）并清掉旧 canvas，避免重影/泄漏
+    const prev = Overlay._byContainer.get(container);
+    if (prev) prev.destroy();
+    container.querySelectorAll('canvas.bz-overlay').forEach((e) => e.remove());
     container.appendChild(cvs);
     this.cvs = cvs;
     this.ctx = cvs.getContext('2d');
 
     const rerender = () => this.redraw();
     chart.timeScale().subscribeVisibleLogicalRangeChange(rerender);
-    if (typeof ResizeObserver !== 'undefined') {
-      new ResizeObserver(rerender).observe(container);
-    }
+    this._ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(rerender) : null;
+    if (this._ro) this._ro.observe(container);
+    Overlay._byContainer.set(container, this);
+  }
+
+  /** 释放 ResizeObserver（主题重建时由下一个实例的构造调用） */
+  destroy() {
+    if (this._ro) this._ro.disconnect();
+    Overlay._byContainer.delete(this.container);
   }
 
   /* 各工具需要的点击数 */
@@ -274,7 +288,7 @@ window.Overlay = class Overlay {
       } else if (ln.type === 'text') {
         const a = this._xy(ln.d1, ln.p1);
         if (!a) continue;
-        const tw = (ln.txt ? ln.txt.length : 0) * 7 + 10;
+        const tw = ln._w || (ln.txt ? ln.txt.length : 0) * 7 + 10;   // _w 由 redraw 缓存
         if (px >= a.x - 3 && px <= a.x + tw && py >= a.y - 14 && py <= a.y + 4) return i;
       } else {                    // trend
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
@@ -445,6 +459,7 @@ window.Overlay = class Overlay {
         if (!a) continue;
         ctx.font = '11px sans-serif';
         const tw = ctx.measureText(ln.txt).width;
+        ln._w = tw + 8;                    // 命中检测复用真实宽度（中英文混排估算不准）
         ctx.fillStyle = T.panel;
         ctx.save();
         ctx.globalAlpha = 0.85;
