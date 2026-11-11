@@ -3,11 +3,16 @@
 > 🥋 盘感是练出来的。真实历史行情双盲回放，逐根推演、模拟撮合，零风险磨手感。
 > （原名「爆竹训练营」，致敬启发的「爆竹K线训练助手」）
 
-两个模块：
+四个模块：
 - **训练**：双盲 K 线训练——随机/自选抽股、逐根回放、模拟买卖
 - **指数看板**：18 个 A股/港美指数的全历史 K 线浏览器——日/周/月/年、MA/BOLL/MACD/KDJ/VOL、
   手动画线（趋势线/水平线/斐波那契/通道/矩形/文字，localStorage 按指数持久化）、
   简化缠论（笔+中枢+线段+背驰自动画）、图表模板
+- **行情**（个股/ETF）：自选列表（与训练自选共用）+ 搜索添加；日线（baostock）+
+  分钟 5/30（astock，限最近 4000 根）；前复权（锚定最新，与训练同口径）/不复权切换；
+  画线/缠论/小地图/联动副图与指数看板同款；数据收盘后更新（标题显示数据截至时刻）
+- **复盘历史**：每局结算自动保存完整复盘包（真实日期 K 线+买卖标记+交易明细+指标），
+  开始页「📋 复盘历史」随时回看；支持单条删除/清空（中途结算的局标 ⏹）
 
 **数据依赖**：个股/ETF 行情存于 `data/market/`（本项目自有副本，**不入库**），由
 `bz_update.py` 用 **baostock**（免费无 token）**从零建立并维护**——全新克隆一条命令
@@ -227,6 +232,15 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 `is_st` 列，比名称匹配更准）；退市股上市/退市具体日期未逐只核对（随机池的年份过滤
 用首根 bar 日期，天然准确）。
 
+## 复盘与成绩管理（v1.3）
+
+- **自动保存**：每局结算（含中途按 F 的局）时把完整复盘包落盘 `data/replays/*.json`——
+  真实日期 K 线、买卖标记、交易明细、权益曲线、揭晓身份（名称/代码/板块/区间）、参数与费率
+- **复盘查看**：开始页「📋 复盘历史」→ 点「复盘」打开全窗口 K 线（真实日期+买卖点+训练起点线）
+  + 汇总指标 + 逐笔交易（含成交日期）；中途结算的局标 ⏹
+- **删除**：历史列表每行可单条删除（连带删复盘文件）；「清空全部」输入「清空」确认
+- `results.jsonl` 仍为 append-only 成绩行（新增 replay 字段引用复盘包）
+
 ## 数据与代码来源
 
 - 行情：`data/market/`（自有副本，`--bootstrap` 从零再生），`instruments.parquet`
@@ -240,7 +254,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ## 文件
 
 ```
-server.py        标准库 HTTP 服务：静态 + /api/new|reveal|finish|stats + /api/search + /api/index/* + /api/market/* + --selftest
+server.py        标准库 HTTP 服务：静态 + /api/new|reveal|finish|stats + /api/search + /api/index/* + /api/market/* + /api/mins/* + /api/results|replay* + --selftest
 bz_data.py       行情 parquet 只读层（数据根自动探测）+ 自选搜索（search/normalize_code/kind_of）
 bz_update.py     baostock 行情更新器：--bootstrap 从零建库/增量/新股回补/复权因子/涨跌停计算/抽样比对
 bz_session.py    会话生成：stock/etf/limit/custom/index 五品类 + 定窗 + 费率/成交模式透传
@@ -249,7 +263,7 @@ web/             前端（无构建步骤）：
   theme.js       四主题（暗黑/明亮/白蓝/深蓝）+ 图表换肤通知
   ind.js         指标纯函数：MA/BOLL/MACD/KDJ + 日周月年聚合 + 简化缠论
   draw.js        画线 canvas 叠加层（看板/训练共用）
-  view.js        指数看板
+  view.js        看板引擎 createBoard（工厂）：指数板与个股/ETF 行情板共用（画线/缠论/小地图/联动/模板；行情板加自选/分钟/复权）
   app.js         训练：回放 + 撮合引擎（当根收盘/次日开盘）+ 周期指标缠论 + 开始页
 data/results.jsonl  训练成绩存档（append-only）
 data/index/*.parquet 指数日线缓存（18 个；A股 11 个 baostock 增量合流，海外腾讯/Yahoo）

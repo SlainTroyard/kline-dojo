@@ -1,6 +1,10 @@
 /* 指数看板（K线道场）：选指 / 日周月年 / 指标开关 / 画线 / 缠论 / 增量刷新 */
 'use strict';
-window.View = (() => {
+window.createBoard = function createBoard(cfg) {
+  const P = cfg.mode === 'market' ? 'mkt' : 'view';      // DOM id 前缀 / localStorage 命名空间
+  const root = document.getElementById(P === 'mkt' ? 'screen-mkt' : 'screen-view');
+  const $ = (suf) => document.getElementById(P + '-' + suf);
+  const lsKey = (k) => 'bz_' + P + '_' + k;
   const UP = '#e0483e', DOWN = '#1fa06b';
   const MA_DEFS = [
     { p: 5, color: '#f0b90b' }, { p: 10, color: '#4a90e2' },
@@ -13,19 +17,22 @@ window.View = (() => {
   let overlay = null;
   let insts = [];
   let curKey = null, curName = '';
-  let rawBars = [];                       // 全量日线
-  let period = localStorage.getItem('bz_view_period') || 'D';
+  let rawBars = [];                       // 全量日线（分钟模式下为分钟 bar）
+  let period = localStorage.getItem(lsKey('period')) || 'D';
+  const MINUTE_PERIODS = ['5m', '30m'];   // 分钟周期（仅行情板；数据源 astock，收盘后更新）
+  let adjMode = localStorage.getItem(lsKey('adj')) || 'qfq';   // 行情板复权：qfq/none
+  let asof = '';                          // 数据截止时刻（行情板标题展示）
   function loadToggles(key, defaults) {    // localStorage 坏值不炸整个看板模块
     try { return Object.assign(defaults, JSON.parse(localStorage.getItem(key) || '{}')); }
     catch { return defaults; }
   }
-  const toggles = loadToggles('bz_view_toggles',
+  const toggles = loadToggles(lsKey('toggles'),
     { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false });
 
   /* ---------------- 小地图：全历史缩略条（点击/拖动跳转可视区间） ---------------- */
   class Minimap {
     constructor() {
-      this.cvs = document.getElementById('view-minimap');
+      this.cvs = document.getElementById(P + '-minimap');
       this.ctx = this.cvs.getContext('2d');
       this.bars = [];
       this.drag = false;
@@ -103,20 +110,19 @@ window.View = (() => {
   let coverRO = null;                     // 遮轴条 ResizeObserver（重建前 disconnect）
 
   /* ---------------- 联动副图：同标的异周期 / 另选标的对照 ---------------- */
-  let syncOn = localStorage.getItem('bz_view_sync') === '1';
+  let syncOn = localStorage.getItem(lsKey('sync')) === '1';
   let subChart = null, subCandle = null, subMA = {};
   let subKey = '';                       // '' = 同主图
-  let subPeriod = localStorage.getItem('bz_view_subperiod') || 'W';
+  let subPeriod = localStorage.getItem(lsKey('subperiod')) || 'W';
   let subRaw = [], subBars = [];         // 副图全量日线 / 当前周期聚合
   let syncingVR = false;                 // 可视范围同步防回环
 
-  const $ = (id) => document.getElementById(id);
 
   /* ---------------- 图表 ---------------- */
   function buildChart() {
     if (chart) { chart.remove(); chart = null; }
     const T = window.BzTheme.colors();
-    chart = LightweightCharts.createChart($('view-chart'), {
+    chart = LightweightCharts.createChart($('chart'), {
       layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 12 },
       grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
       rightPriceScale: { borderColor: T.line, scaleMargins: { top: 0.02, bottom: 0.44 } },
@@ -166,7 +172,7 @@ window.View = (() => {
     chart.priceScale('kdj').applyOptions({ visible: false });
     applyPaneLayout();
 
-    overlay = new window.Overlay(chart, candle, $('view-chart-wrap'), {
+    overlay = new window.Overlay(chart, candle, $('chart-wrap'), {
       onModeChange: syncDrawBtns,
       onChange: saveLines,
     });
@@ -186,22 +192,22 @@ window.View = (() => {
     window.__bzView = { chart, overlay, minimap };   // 调试/自动化测试用
 
     // 遮住副图区背后的主轴刻度（外推负值会误导）；主题重建时先清旧的
-    $('view-chart-wrap').querySelectorAll('.axis-cover').forEach((e) => e.remove());
+    $('chart-wrap').querySelectorAll('.axis-cover').forEach((e) => e.remove());
     const cover = document.createElement('div');
     cover.className = 'axis-cover';
-    $('view-chart-wrap').appendChild(cover);
+    $('chart-wrap').appendChild(cover);
     const fitCover = () => { cover.style.width = (chart.priceScale('right').width() + 2) + 'px'; };
     fitCover();
     if (coverRO) coverRO.disconnect();          // 主题重建不累积 observer
     coverRO = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(fitCover) : null;
-    if (coverRO) coverRO.observe($('view-chart'));
+    if (coverRO) coverRO.observe($('chart'));
 
     applyToggles();
   }
 
   /** 画线工具按钮高亮与 overlay.mode 同步（含画完线自动复位 none 的场景） */
   function syncDrawBtns() {
-    document.querySelectorAll('[data-draw]').forEach((x) => {
+    root.querySelectorAll('[data-draw]').forEach((x) => {
       x.classList.toggle('on', x.dataset.draw === overlay.mode);
     });
   }
@@ -231,14 +237,15 @@ window.View = (() => {
    *  autoscale，年K 小样本的 BOLL 下轨可为负，不清会污染价格刻度）。 */
   function refillIndicators(bars) {
     const closes = bars.map((b) => b.c);
-    const line = (arr) => arr.map((v, i) => (v == null ? null : { time: bars[i].d, value: v })).filter(Boolean);
+    const tOf = (i) => (bars[i].t != null ? bars[i].t : bars[i].d);
+    const line = (arr) => arr.map((v, i) => (v == null ? null : { time: tOf(i), value: v })).filter(Boolean);
 
     for (const m of MA_DEFS) {
       maS[m.p].setData(toggles.ma ? line(window.Ind.sma(closes, m.p)) : []);
     }
     if (toggles.boll) {
       const bo = window.Ind.boll(closes);
-      bollBar.setData(bars.map((b) => ({ time: b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
+      bollBar.setData(bars.map((b) => ({ time: b.t != null ? b.t : b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
       bollS.mid.setData(line(bo.mid));
       bollS.up.setData(line(bo.up));
       bollS.low.setData(line(bo.low));
@@ -250,18 +257,18 @@ window.View = (() => {
       const T = window.BzTheme.colors();
       const mc = window.Ind.macd(closes);
       macdS.hist.setData(mc.hist.map((v, i) => ({
-        time: bars[i].d, value: v, color: v >= 0 ? T.macdUp : T.macdDown,
+        time: tOf(i), value: v, color: v >= 0 ? T.macdUp : T.macdDown,
       })));
-      macdS.dif.setData(mc.dif.map((v, i) => ({ time: bars[i].d, value: v })));
-      macdS.dea.setData(mc.dea.map((v, i) => ({ time: bars[i].d, value: v })));
+      macdS.dif.setData(mc.dif.map((v, i) => ({ time: tOf(i), value: v })));
+      macdS.dea.setData(mc.dea.map((v, i) => ({ time: tOf(i), value: v })));
     } else {
       macdS.hist.setData([]); macdS.dif.setData([]); macdS.dea.setData([]);
     }
     if (toggles.kdj) {
       const kj = window.Ind.kdj(bars);
-      kdjS.k.setData(kj.k.map((v, i) => ({ time: bars[i].d, value: v })));
-      kdjS.d.setData(kj.d.map((v, i) => ({ time: bars[i].d, value: v })));
-      kdjS.j.setData(kj.j.map((v, i) => ({ time: bars[i].d, value: v })));
+      kdjS.k.setData(kj.k.map((v, i) => ({ time: tOf(i), value: v })));
+      kdjS.d.setData(kj.d.map((v, i) => ({ time: tOf(i), value: v })));
+      kdjS.j.setData(kj.j.map((v, i) => ({ time: tOf(i), value: v })));
     } else {
       kdjS.k.setData([]); kdjS.d.setData([]); kdjS.j.setData([]);
     }
@@ -269,12 +276,15 @@ window.View = (() => {
 
   function renderAll() {
     if (!chart || !curKey) return;
-    if (!rawBars.length) { $('view-title').textContent = `${curName}：无数据`; return; }
+    if (!rawBars.length) { $('title').textContent = `${curName}：无数据`; return; }
     const T = window.BzTheme.colors();
-    const bars = window.Ind.aggregate(rawBars, period);
-    candle.setData(bars.map((b) => ({ time: b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
+    const minute = MINUTE_PERIODS.includes(period);
+    const bars = curBars();
+    chart.timeScale().applyOptions({ timeVisible: minute, secondsVisible: false });
+    const tOf = (b) => (b.t != null ? b.t : b.d);       // 分钟 bar 用 unix ts，日线用日期串
+    candle.setData(bars.map((b) => ({ time: tOf(b), open: b.o, high: b.h, low: b.l, close: b.c })));
     volS.setData(toggles.vol ? bars.map((b) => ({
-      time: b.d, value: b.v,
+      time: tOf(b), value: b.v,
       color: b.c >= b.o ? T.volUp : T.volDown,
     })) : []);
     refillIndicators(bars);
@@ -289,9 +299,20 @@ window.View = (() => {
       to: Math.min(bars.length + 5, bars.length + 8),
     });
     updateLegend(null);
-    const pn = { D: '日K', W: '周K', M: '月K', Y: '年K' }[period];
-    $('view-title').textContent =
-      `${curName}（${rawBars[0].d} ~ ${rawBars[rawBars.length - 1].d}，日线 ${rawBars.length} 根 · ${pn} ${bars.length} 根）`;
+    const pn = { '5m': '5分', '30m': '30分', D: '日K', W: '周K', M: '月K', Y: '年K' }[period];
+    const isMin = MINUTE_PERIODS.includes(period);
+    const scope = isMin
+      ? `${rawBars[0].d.slice(0, 10)} ~ ${rawBars[rawBars.length - 1].d.slice(0, 10)}`
+      : `${rawBars[0].d} ~ ${rawBars[rawBars.length - 1].d}`;
+    const cnt = isMin ? `分钟 ${rawBars.length} 根（限最近）` : `日线 ${rawBars.length} 根`;
+    $('title').textContent =
+      `${curName}（${scope}，${cnt} · ${pn} ${bars.length} 根` +
+      (cfg.mode === 'market' && asof ? ` · 数据截至 ${asof.slice(0, 10)}${isMin ? ' ' + asof.slice(11, 16) : ''}` : '') + `）`;
+  }
+
+  /** 当前周期 bars：分钟=rawBars 原样（含 t），日线系=本地聚合 */
+  function curBars() {
+    return MINUTE_PERIODS.includes(period) ? rawBars : window.Ind.aggregate(rawBars, period);
   }
 
   function applyToggles() {
@@ -304,21 +325,21 @@ window.View = (() => {
     vis(volS, toggles.vol);
     applyPaneLayout();
     // 关闭的指标清空数据，避免参与主轴 autoscale（BOLL 年K 可为负）
-    if (rawBars.length) refillIndicators(window.Ind.aggregate(rawBars, period));
+    if (rawBars.length) refillIndicators(curBars());
     if (volS && rawBars.length) {
       const T = window.BzTheme.colors();
-      const bars = window.Ind.aggregate(rawBars, period);
+      const bars = curBars();
       volS.setData(toggles.vol ? bars.map((b) => ({
         time: b.d, value: b.v,
         color: b.c >= b.o ? T.volUp : T.volDown,
       })) : []);
     }
-    document.querySelectorAll('[data-tg]').forEach((b) => {
+    root.querySelectorAll('[data-tg]').forEach((b) => {
       b.classList.toggle('on', !!toggles[b.dataset.tg]);
     });
-    localStorage.setItem('bz_view_toggles', JSON.stringify(toggles));
+    localStorage.setItem(lsKey('toggles'), JSON.stringify(toggles));
     if (overlay) {
-      overlay.setChan(window.Ind.chanView(window.Ind.aggregate(rawBars, period), toggles));
+      overlay.setChan(window.Ind.chanView(curBars(), toggles));
     }
   }
 
@@ -327,13 +348,13 @@ window.View = (() => {
     : v >= 1e4 ? (v / 1e4).toFixed(2) + '万' : String(Math.round(v));
 
   function updateLegend(param) {
-    const el = $('view-legend');
+    const el = $('legend');
     if (!rawBars.length) { el.textContent = ''; return; }
     const T = window.BzTheme.colors();
-    const bars = window.Ind.aggregate(rawBars, period);
+    const bars = curBars();
     let idx = bars.length - 1;
     if (param && param.time) {
-      const i = bars.findIndex((b) => b.d === param.time);
+      const i = bars.findIndex((b) => (b.t != null ? b.t : b.d) === param.time);
       if (i >= 0) idx = i;
     }
     const b = bars[idx];
@@ -379,11 +400,22 @@ window.View = (() => {
 
   /* ---------------- 列表 / 选指 / 刷新 ---------------- */
   async function loadList() {
+    if (cfg.mode === 'market') {           // 行情板：自选列表（与训练页自选共用 bz_watchlist）
+      try { watchlist = JSON.parse(localStorage.getItem('bz_watchlist') || '[]'); } catch { watchlist = []; }
+      insts = watchlist.map((w) => ({ key: w.code, name: w.name, group: '自选' }));
+      renderList();
+      fillSubSel();
+      return;
+    }
     const d = await fetch('/api/index/list').then((r) => r.json());
     insts = d.instruments || [];
     renderList();
-    // 联动副图的标的下拉（bind 时 insts 尚空，这里填充；DOM 构建 + 回设当前选择）
-    const subSel = $('view-sub-key');
+    fillSubSel();
+  }
+
+  /** 联动副图标的下拉（bind 时 insts 尚空，loadList 后填充；DOM 构建 + 回设当前选择） */
+  function fillSubSel() {
+    const subSel = $('sub-key');
     subSel.textContent = '';
     for (const [val, label] of [['', '同主图'], ...['A股', '海外']
       .flatMap((g) => insts.filter((i) => i.group === g)).map((i) => [i.key, i.name])]) {
@@ -396,9 +428,34 @@ window.View = (() => {
   }
 
   function renderList() {
-    const q = ($('view-search').value || '').trim().toLowerCase();
-    const box = $('view-list');
+    const q = ($('search').value || '').trim().toLowerCase();
+    const box = $('list');
     box.innerHTML = '';
+    if (cfg.mode === 'market') {
+      // 自选 + 搜索结果（/api/search 添加到自选）
+      const mk = (it, extra) => {
+        const el = document.createElement('div');
+        el.className = 'list-item' + (it.key === curKey ? ' active' : '');
+        el.dataset.key = it.key;
+        el.innerHTML = `<span class="n">${it.name}</span><span class="d">${extra || ''}</span>`;
+        el.onclick = () => { if (extra === '＋') addToWatchlist(it); else select(it.key); };
+        box.appendChild(el);
+      };
+      if (q) {
+        fetch('/api/search?q=' + encodeURIComponent(q)).then((r) => r.json()).then((d) => {
+          if (( $('search').value || '').trim().toLowerCase() !== q) return;   // 输入已变
+          box.innerHTML = '';
+          const hits = d.items || [];
+          if (!hits.length) box.innerHTML = '<div class="list-group">无匹配</div>';
+          for (const h of hits.slice(0, 30)) mk({ key: h.code, name: `${h.name} ${h.code}` },
+            watchlist.some((w) => w.code === h.code) ? '✓' : '＋');
+        }).catch(() => {});
+        return;
+      }
+      if (!insts.length) box.innerHTML = '<div class="list-group">自选为空：搜索代码/名称添加</div>';
+      for (const it of insts) mk(it);
+      return;
+    }
     for (const g of ['A股', '海外']) {
       const items = insts.filter((i) => i.group === g &&
         (!q || i.name.toLowerCase().includes(q) || i.key.toLowerCase().includes(q)));
@@ -418,6 +475,26 @@ window.View = (() => {
     }
   }
 
+  let watchlist = [];
+  function addToWatchlist(it) {
+    const code = it.key;
+    if (watchlist.some((w) => w.code === code)) return;
+    const name = it.name.replace(/\s+\d{6}$/, '');     // 去掉搜索结果里拼的代码尾巴
+    watchlist.push({ code, name });
+    localStorage.setItem('bz_watchlist', JSON.stringify(watchlist));
+    loadList();
+    select(code);
+  }
+
+  /** 本板数据拉取：指数 /api/index/kline；个股/ETF /api/market/kline（日线或分钟） */
+  function klineUrl(key) {
+    if (cfg.mode === 'market') {
+      const freq = MINUTE_PERIODS.includes(period) ? period.replace('m', 'min') : 'D';   // 5m→5min
+      return `/api/market/kline?code=${encodeURIComponent(key)}&freq=${freq}&adj=${adjMode}`;
+    }
+    return '/api/index/kline?key=' + encodeURIComponent(key);
+  }
+
   let selSeq = 0, subSeq = 0;            // 竞态守卫：晚到的旧响应不覆盖新选择
 
   async function select(key) {
@@ -425,23 +502,27 @@ window.View = (() => {
     const seq = ++selSeq;
     const it = insts.find((x) => x.key === key);
     curName = it ? it.name : key;
-    document.querySelectorAll('.list-item').forEach((e) => e.classList.toggle('active', e.dataset.key === key));
-    $('view-title').textContent = `${curName} 加载中…`;
+    root.querySelectorAll('.list-item').forEach((e) => e.classList.toggle('active', e.dataset.key === key));
+    $('title').textContent = `${curName} 加载中…`;
     try {
-      const d = await fetch('/api/index/kline?key=' + encodeURIComponent(key)).then((r) => r.json());
+      const d = await fetch(klineUrl(key)).then((r) => r.json());
       if (seq !== selSeq) return;        // 期间用户又切了别的标的
       if (d.error) throw new Error(d.error);
-      rawBars = d.bars.map((b) => ({ d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
+      asof = d.asof || '';
+      rawBars = d.bars.map((b) => ({
+        d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5],
+        t: b[0].length > 10 ? Math.floor(Date.parse(b[0].replace(' ', 'T')) / 1000) : null,  // 分钟→unix ts（含秒无需再拼）
+      }));
       overlay.setLines(loadLines());
       renderAll();
       if (syncOn) loadSub(subKey || curKey);   // 联动：主图换标的 → 副图跟随（同主图模式）
     } catch (e) {
-      if (seq === selSeq) $('view-title').textContent = `${curName} 加载失败：${e.message}`;
+      if (seq === selSeq) $('title').textContent = `${curName} 加载失败：${e.message}`;
     }
   }
 
   async function refreshData() {
-    const btn = $('view-refresh');
+    const btn = $('refresh');
     btn.disabled = true;
     btn.textContent = '刷新中…';
     try {
@@ -449,7 +530,7 @@ window.View = (() => {
       await loadList();
       if (curKey) await select(curKey);
     } catch (e) {
-      $('view-title').textContent = `同步失败：${e.message}`;
+      $('title').textContent = `同步失败：${e.message}`;
     } finally {
       btn.disabled = false;
       btn.textContent = '⟳ 同步数据';
@@ -460,7 +541,7 @@ window.View = (() => {
   function buildSubChart() {
     if (subChart) { subChart.remove(); subChart = null; }
     const T = window.BzTheme.colors();
-    subChart = LightweightCharts.createChart($('view-sub'), {
+    subChart = LightweightCharts.createChart($('sub'), {
       layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 11 },
       grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
       rightPriceScale: { borderColor: T.line, scaleMargins: { top: 0.05, bottom: 0.05 } },
@@ -494,15 +575,18 @@ window.View = (() => {
     if (!subChart) return;
     const seq = ++subSeq;
     const it = insts.find((x) => x.key === key);
-    $('view-sub-title').textContent = `${it ? it.name : key} · ${key} 加载中…`;
+    $('sub-title').textContent = `${it ? it.name : key} · ${key} 加载中…`;
     try {
-      const d = await fetch('/api/index/kline?key=' + encodeURIComponent(key)).then((r) => r.json());
+      const url = cfg.mode === 'market'
+        ? `/api/market/kline?code=${encodeURIComponent(key)}&freq=D&adj=${adjMode}`
+        : '/api/index/kline?key=' + encodeURIComponent(key);
+      const d = await fetch(url).then((r) => r.json());
       if (seq !== subSeq) return;        // 期间副图标的又被改选
       if (d.error) throw new Error(d.error);
       subRaw = d.bars.map((b) => ({ d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
       renderSub();
     } catch (e) {
-      if (seq === subSeq) $('view-sub-title').textContent = `${it ? it.name : key} 加载失败：${e.message}`;
+      if (seq === subSeq) $('sub-title').textContent = `${it ? it.name : key} 加载失败：${e.message}`;
     }
   }
 
@@ -517,7 +601,7 @@ window.View = (() => {
     }
     const it = insts.find((x) => x.key === (subKey || curKey));
     const pn = { D: '日K', W: '周K', M: '月K', Y: '年K' }[subPeriod];
-    $('view-sub-title').textContent = `${it ? it.name : (subKey || curKey)}（${pn} ${subBars.length} 根）`;
+    $('sub-title').textContent = `${it ? it.name : (subKey || curKey)}（${pn} ${subBars.length} 根）`;
     syncSubRange(true);
   }
 
@@ -563,14 +647,14 @@ window.View = (() => {
 
   function applySync(on) {
     syncOn = on;
-    localStorage.setItem('bz_view_sync', on ? '1' : '0');
-    $('view-sync').classList.toggle('on', on);
-    document.querySelector('.view-main').classList.toggle('sub-on', on);
-    $('view-sub-wrap').classList.toggle('hidden', !on);
+    localStorage.setItem(lsKey('sync'), on ? '1' : '0');
+    $('sync').classList.toggle('on', on);
+    root.querySelector('.view-main').classList.toggle('sub-on', on);
+    $('sub-wrap').classList.toggle('hidden', !on);
     if (on) {
       if (!subChart) buildSubChart();
       loadSub(subKey || curKey);
-      document.querySelectorAll('[data-subp]').forEach((b) => {
+      root.querySelectorAll('[data-subp]').forEach((b) => {
         b.classList.toggle('on', b.dataset.subp === subPeriod);
       });
     } else if (subChart) {
@@ -580,7 +664,7 @@ window.View = (() => {
   }
 
   /* ---------------- 画线持久化 ---------------- */
-  const lkey = () => 'bz_draw_' + curKey;
+  const lkey = () => lsKey('draw_' + curKey);
   function loadLines() {
     try { return JSON.parse(localStorage.getItem(lkey()) || '[]'); } catch { return []; }
   }
@@ -589,12 +673,12 @@ window.View = (() => {
   }
 
   /* ---------------- 图表模板（周期+指标开关组合，localStorage） ---------------- */
-  const TPL_KEY = 'bz_tpl_view';
+  const TPL_KEY = 'bz_tpl_' + P;
   function tpls() {
     try { return JSON.parse(localStorage.getItem(TPL_KEY) || '{}'); } catch { return {}; }
   }
   function refreshTplSel() {
-    const sel = $('view-tpl-sel');
+    const sel = $('tpl-sel');
     sel.textContent = '';                  // DOM 构建：模板名自由输入不拼 HTML
     for (const k of ['', ...Object.keys(tpls())]) {
       const o = document.createElement('option');
@@ -605,52 +689,78 @@ window.View = (() => {
   }
   function applyTpl(t) {
     if (t.period) {
+      const wasMin = MINUTE_PERIODS.includes(period);
       period = t.period;
-      localStorage.setItem('bz_view_period', period);
-      document.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x.dataset.period === period));
+      localStorage.setItem(lsKey('period'), period);
+      root.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x.dataset.period === period));
     }
     Object.assign(toggles, t.toggles || {});
     applyToggles();
+    if (cfg.mode === 'market' && MINUTE_PERIODS.includes(period) !== wasMin) {
+      if (curKey) select(curKey);
+      return;
+    }
     renderAll();
   }
 
   /* ---------------- 初始化 ---------------- */
   function bind() {
-    document.querySelectorAll('[data-period]').forEach((b) => {
+    root.querySelectorAll('[data-period]').forEach((b) => {
       b.classList.toggle('on', b.dataset.period === period);
       b.onclick = () => {
+        const wasMin = MINUTE_PERIODS.includes(period);
         period = b.dataset.period;
-        localStorage.setItem('bz_view_period', period);
-        document.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x === b));
+        localStorage.setItem(lsKey('period'), period);
+        root.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x === b));
+        // 分钟⇆日线数据形态不同：重取数；日线系周期本地聚合即可
+        if (cfg.mode === 'market' && MINUTE_PERIODS.includes(period) !== wasMin) {
+          if (curKey) select(curKey);
+          return;
+        }
         renderAll();
       };
     });
-    document.querySelectorAll('[data-tg]').forEach((b) => {
+    // 行情板：复权切换（前复权锚定最新 / 不复权）
+    if (cfg.mode === 'market') {
+      const adjBtn = $('adj');
+      const syncAdj = () => {
+        adjBtn.classList.toggle('on', adjMode === 'qfq');
+        adjBtn.textContent = adjMode === 'qfq' ? '前复权' : '不复权';
+      };
+      syncAdj();
+      adjBtn.onclick = () => {
+        adjMode = adjMode === 'qfq' ? 'none' : 'qfq';
+        localStorage.setItem(lsKey('adj'), adjMode);
+        syncAdj();
+        if (curKey) select(curKey);
+      };
+    }
+    root.querySelectorAll('[data-tg]').forEach((b) => {
       b.onclick = () => { toggles[b.dataset.tg] = !toggles[b.dataset.tg]; applyToggles(); updateLegend(null); };
     });
-    document.querySelectorAll('[data-draw]').forEach((b) => {
+    root.querySelectorAll('[data-draw]').forEach((b) => {
       b.onclick = () => {
         const m = b.dataset.draw;
         overlay.setMode(overlay.mode === m ? 'none' : m);   // 高亮经 onModeChange 同步
       };
     });
-    $('view-undo').onclick = () => { if (overlay.undo()) saveLines(); };
-    $('view-redo').onclick = () => { if (overlay.redo()) saveLines(); };
-    $('view-clear-draw').onclick = () => { overlay.clearAll(); saveLines(); };
-    $('view-refresh').onclick = refreshData;
-    $('view-search').oninput = renderList;
+    $('undo').onclick = () => { if (overlay.undo()) saveLines(); };
+    $('redo').onclick = () => { if (overlay.redo()) saveLines(); };
+    $('clear-draw').onclick = () => { overlay.clearAll(); saveLines(); };
+    if ($('refresh')) $('refresh').onclick = refreshData;
+    $('search').oninput = renderList;
 
     // 联动副图
-    $('view-sync').onclick = () => applySync(!syncOn);
-    document.querySelectorAll('[data-subp]').forEach((b) => {
+    $('sync').onclick = () => applySync(!syncOn);
+    root.querySelectorAll('[data-subp]').forEach((b) => {
       b.onclick = () => {
         subPeriod = b.dataset.subp;
-        localStorage.setItem('bz_view_subperiod', subPeriod);
-        document.querySelectorAll('[data-subp]').forEach((x) => x.classList.toggle('on', x === b));
+        localStorage.setItem(lsKey('subperiod'), subPeriod);
+        root.querySelectorAll('[data-subp]').forEach((x) => x.classList.toggle('on', x === b));
         renderSub();
       };
     });
-    const subSel = $('view-sub-key');
+    const subSel = $('sub-key');
     subSel.onchange = () => {
       subKey = subSel.value;
       if (syncOn) loadSub(subKey || curKey);
@@ -658,7 +768,7 @@ window.View = (() => {
 
     // 图表模板
     refreshTplSel();
-    $('view-tpl-save').onclick = () => {
+    $('tpl-save').onclick = () => {
       window.bzPrompt('模板名称：', '', (name) => {
         name = name.slice(0, 40);
         if (!name) return;
@@ -666,47 +776,40 @@ window.View = (() => {
         m[name] = { period, toggles: { ...toggles } };
         localStorage.setItem(TPL_KEY, JSON.stringify(m));
         refreshTplSel();
-        $('view-tpl-sel').value = name;
+        $('tpl-sel').value = name;
       });
     };
-    $('view-tpl-del').onclick = () => {
-      const name = $('view-tpl-sel').value;
+    $('tpl-del').onclick = () => {
+      const name = $('tpl-sel').value;
       if (!name) return;
       const m = tpls();
       delete m[name];
       localStorage.setItem(TPL_KEY, JSON.stringify(m));
       refreshTplSel();
     };
-    $('view-tpl-sel').onchange = () => {
-      const t = tpls()[$('view-tpl-sel').value];
+    $('tpl-sel').onchange = () => {
+      const t = tpls()[$('tpl-sel').value];
       if (t) applyTpl(t);
     };
 
-    // 顶部导航：训练 / 看板
-    $('nav-train').onclick = () => { switchTab('train'); window.dispatchEvent(new Event('bz-tab-train')); };
-    $('nav-view').onclick = () => switchTab('view');
+    // 顶部导航统一由 window.bzNav 管理（view.js 顶层绑定）
 
-    // 撤销/重做快捷键（仅看板页签激活时生效；输入框内不拦）
+    // 撤销/重做快捷键（仅本板可见时生效；输入框内不拦）
     document.addEventListener('keydown', (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-      if ($('screen-view').classList.contains('hidden') || !overlay) return;
+      if (root.classList.contains('hidden') || !overlay) return;
       if (e.code === 'KeyZ' && !e.shiftKey) { if (overlay.undo()) saveLines(); }
       else if (e.code === 'KeyY' || (e.code === 'KeyZ' && e.shiftKey)) { if (overlay.redo()) saveLines(); }
     });
   }
 
-  function switchTab(which) {
-    $('app-train').classList.toggle('hidden', which !== 'train');
-    $('screen-view').classList.toggle('hidden', which !== 'view');
-    $('nav-train').classList.toggle('active', which === 'train');
-    $('nav-view').classList.toggle('active', which === 'view');
-    if (which === 'view') {
-      if (!chart) buildChart();          // 首次进入且容器可见时建图
-      if (!insts.length) loadList()
-        .then(() => { if (!curKey && insts.length) select('sh000300'); })
-        .catch((e) => { $('view-title').textContent = `列表加载失败：${e.message}`; });
-      if (syncOn && !subChart) applySync(true);   // 恢复上次的联动状态
-    }
+  /** 进入本板（由 bzNav 调用）：首进建图/加载列表/恢复联动 */
+  function enter() {
+    if (!chart) buildChart();            // 首次进入且容器可见时建图
+    if (!insts.length || cfg.mode === 'market') loadList()   // 行情板每次进入都刷新自选
+      .then(() => { if (!curKey && insts.length) select(cfg.mode === 'market' ? insts[0].key : 'sh000300'); })
+      .catch((e) => { $('title').textContent = `列表加载失败：${e.message}`; });
+    if (syncOn && !subChart) applySync(true);   // 恢复上次的联动状态
   }
 
   function init() {
@@ -714,7 +817,7 @@ window.View = (() => {
     inited = true;
     bind();
     // 联动按钮初始高亮（进入看板前也保持记忆状态）
-    $('view-sync').classList.toggle('on', syncOn);
+    $('sync').classList.toggle('on', syncOn);
 
     // 主题切换：重建图表（配色/画线 canvas 跟随新主题）
     window.BzTheme.onChange(() => {
@@ -728,5 +831,26 @@ window.View = (() => {
     });
   }
 
-  return { init };
-})();
+  return { init, enter, reload: () => { if (curKey) select(curKey); } };
+};
+
+window.View = window.createBoard({ mode: 'index' });
+window.Mkt = window.createBoard({ mode: 'market' });   // 个股/ETF 行情板（日线+分钟）
+
+/* ---------------- 三页签导航（训练 / 指数看板 / 行情） ---------------- */
+window.bzNav = {
+  switch(which) {           // 'train' | 'view' | 'mkt'
+    document.getElementById('app-train').classList.toggle('hidden', which !== 'train');
+    document.getElementById('screen-view').classList.toggle('hidden', which !== 'view');
+    document.getElementById('screen-mkt').classList.toggle('hidden', which !== 'mkt');
+    for (const w of ['train', 'view', 'mkt']) {
+      document.getElementById('nav-' + w).classList.toggle('active', w === which);
+    }
+    if (which === 'view' && window.View) window.View.enter();
+    if (which === 'mkt' && window.Mkt) window.Mkt.enter();
+    if (which === 'train') window.dispatchEvent(new Event('bz-tab-train'));
+  },
+};
+for (const w of ['train', 'view', 'mkt']) {
+  document.getElementById('nav-' + w).onclick = () => window.bzNav.switch(w);
+}

@@ -708,7 +708,19 @@ function finish(endedBy) {
 
   renderResult(result, finalEquity);
   showScreen('result');
-  api('/api/finish', { sid: S.sid, result }).catch(() => {});
+  // 复盘包：bars/交易/权益曲线随结算一次落盘（服务端补揭晓身份+真实日期）
+  const replay = {
+    bars: S.bars.map((b) => [b.o, b.h, b.l, b.c, b.v]),
+    history: S.history, forward: S.forward,
+    trades, markers,
+    equity_curve: equityCurve.map((p) => [p.i, Math.round(p.equity * 100) / 100]),
+    params: {
+      capital: S.config.capital, fill_mode: fillMode(),
+      commission_rate: S.config.commission_rate, commission_min: S.config.commission_min,
+      stamp_rate: S.config.stamp_rate, transfer_rate: S.config.transfer_rate,
+    },
+  };
+  api('/api/finish', { sid: S.sid, result, replay }).catch(() => {});
 }
 
 function renderResult(r, finalEquity) {
@@ -846,6 +858,109 @@ async function loadStats() {
       ` · 平均收益 <b style="color:${st.avg_return >= 0 ? 'var(--up)' : 'var(--down)'}">${fmtPct(st.avg_return)}</b>` +
       ` · 最好 <b style="color:var(--up)">${fmtPct(st.best)}</b> / 最差 <b style="color:var(--down)">${fmtPct(st.worst)}</b>`;
   } catch { $('stats-bar').textContent = ' '; }
+}
+
+/* ---- 复盘历史 / 复盘视图 ---- */
+let replayViewChart = null;
+
+async function openHistory() {
+  $('hist-modal').classList.remove('hidden');
+  $('hist-body').textContent = '加载中…';
+  let rows;
+  try { rows = (await api('/api/results')).rows || []; }
+  catch (e) { $('hist-body').textContent = '加载失败：' + e.message; return; }
+  if (!rows.length) { $('hist-body').textContent = '还没有对局记录'; return; }
+  let html = '<table><tr><th>时间</th><th>品类</th><th>标的</th><th>收益</th><th>回合</th><th>操作</th></tr>';
+  rows.forEach((r) => {
+    const ret = r.return_pct != null ? r.return_pct : 0;
+    const retCls = ret > 0 ? 'var(--up)' : ret < 0 ? 'var(--down)' : 'var(--dim)';
+    const name = r.name ? `${r.name}` : '—';
+    html += `<tr data-ts="${r.ts}">
+      <td>${(r.ts || '').slice(5, 16)}</td>
+      <td>${CAT_NAMES[r.category] || r.category || '?'}</td>
+      <td>${name}${r.ended_by === 'manual' ? '<span style="color:var(--dim)" title="中途手动结算"> ⏹</span>' : ''}</td>
+      <td style="color:${retCls}">${r.return_pct != null ? fmtPct(ret) : '—'}</td>
+      <td>${r.wins || 0}胜${r.losses || 0}负</td>
+      <td>${r.replay
+        ? `<button class="mini" data-replay="${r.replay}">复盘</button>`
+        : '<span style="color:var(--dim)">无</span>'}
+         <button class="mini danger" data-del="${r.ts}">删</button></td></tr>`;
+  });
+  html += '</table>';
+  $('hist-body').innerHTML = html;
+  $('hist-body').querySelectorAll('[data-replay]').forEach((b) => {
+    b.onclick = () => openReplay(b.dataset.replay);
+  });
+  $('hist-body').querySelectorAll('[data-del]').forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api('/api/results/delete', { ts: b.dataset.del });
+        toast('已删除', true);
+        loadStats();
+        openHistory();
+      } catch (e) { toast('删除失败：' + e.message); }
+    };
+  });
+}
+
+async function openReplay(fn) {
+  let d;
+  try { d = await api('/api/replay?file=' + encodeURIComponent(fn)); }
+  catch (e) { toast('复盘加载失败：' + e.message); return; }
+  const T = window.BzTheme.colors();
+  // 身份行
+  const boardName = { main: '主板', chinext: '创业板', star: '科创板', etf: 'ETF', index: '指数' }[d.board] || d.board;
+  $('replay-identity').innerHTML =
+    `<b>${d.name}</b> <span style="color:var(--dim)">${d.code} · ${boardName} · ${CAT_NAMES[d.category] || d.category}` +
+    ` · ${d.start_date} ~ ${d.end_date} · ${d.ts}</span>`;
+  // 全窗口真实日期 K 线 + 买卖标记 + 起点线
+  if (replayViewChart) { replayViewChart.remove(); replayViewChart = null; }
+  replayViewChart = LightweightCharts.createChart($('replay-chart2'), {
+    layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 12 },
+    grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
+    rightPriceScale: { borderColor: T.line },
+    timeScale: { borderColor: T.line, timeVisible: false },
+    autoSize: true,
+  });
+  const rc = replayViewChart.addCandlestickSeries({
+    upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
+    wickUpColor: UP, wickDownColor: DOWN,
+  });
+  rc.setData(d.bars.map((b, i) => ({
+    time: d.dates[i], open: b[0], high: b[1], low: b[2], close: b[3],
+  })));
+  rc.createPriceLine({ price: d.bars[d.history - 1][3], color: '#f0b90b', lineWidth: 1, lineStyle: 2, title: '训练起点' });
+  // markers 存的是双盲伪时间轴：FAKE_T0 + i*86400 → 换算回真实日期
+  rc.setMarkers((d.markers || []).map((m) => ({
+    ...m, time: d.dates[Math.round((m.time - FAKE_T0) / 86400)],
+  })));
+  replayViewChart.timeScale().fitContent();
+  // 汇总指标
+  const r = d.result || {};
+  const cls = (x) => `color:${x > 0 ? 'var(--up)' : x < 0 ? 'var(--down)' : 'var(--text)'}`;
+  $('replay-summary').innerHTML = [
+    `总收益 <b style="${cls(r.return_pct)}">${fmtPct(r.return_pct || 0)}</b>`,
+    `持有不动 <b style="${cls(r.benchmark_pct)}">${fmtPct(r.benchmark_pct || 0)}</b>`,
+    `最大回撤 <b>${((r.max_drawdown || 0) * 100).toFixed(2)}%</b>`,
+    `回合 <b>${r.wins || 0}胜${r.losses || 0}负</b>`,
+    `推进 <b>${r.bars_played || 0}/${d.forward}</b>根`,
+    `成交 <b>${r.fill_mode === 'open' ? '次日开盘' : '当根收盘'}</b>`,
+    `用时 <b>${r.duration_sec || 0}s</b>`,
+    r.ended_by === 'manual' ? '<b style="color:var(--dim)">中途结算</b>' : '',
+  ].filter(Boolean).join(' · ');
+  // 交易明细
+  let rows = '<table><tr><th>#</th><th>方向</th><th>股数</th><th>价格</th><th>费用</th><th>盈亏</th><th>日期</th></tr>';
+  (d.trades || []).forEach((t, k) => {
+    rows += `<tr><td>${k + 1}</td>
+      <td class="side-${t.side}">${t.side === 'buy' ? '买入' : '卖出'}${t.fill === 'open' ? ' 开' : ''}</td>
+      <td>${t.shares}</td><td>${t.price.toFixed(2)}</td><td>${t.fee.toFixed(2)}</td>
+      <td>${t.realized != null ? `<span style="color:${t.realized >= 0 ? 'var(--up)' : 'var(--down)'}">${t.realized.toFixed(2)}</span>` : ''}</td>
+      <td style="color:var(--dim)">${d.dates[t.i] || ''}</td></tr>`;
+  });
+  if (!(d.trades || []).length) rows += '<tr><td colspan="7" style="text-align:center;color:var(--dim)">本局没有交易</td></tr>';
+  rows += '</table>';
+  $('replay-trades').innerHTML = rows;
+  $('replay-modal').classList.remove('hidden');
 }
 
 /* ---- 自选：搜索 / chips / 自选清单 ---- */
@@ -1146,6 +1261,23 @@ function bind() {
     catch (e) { toast('开局失败：' + e.message); }
   };
   $('btn-home').onclick = () => { showScreen('start'); loadStats(); };
+
+  // 复盘历史 / 复盘视图弹层
+  $('btn-history').onclick = openHistory;
+  $('hist-close').onclick = () => $('hist-modal').classList.add('hidden');
+  $('hist-modal').onclick = (e) => { if (e.target === $('hist-modal')) $('hist-modal').classList.add('hidden'); };
+  $('hist-clear').onclick = () => {
+    window.bzPrompt('清空全部成绩与复盘不可恢复。输入「清空」确认：', '', (txt) => {
+      if (txt !== '清空') return;
+      api('/api/results/delete', { all: true })
+        .then(() => { toast('已清空', true); loadStats(); $('hist-modal').classList.add('hidden'); })
+        .catch((e) => toast('清空失败：' + e.message));
+    });
+  };
+  $('replay-close').onclick = () => {
+    $('replay-modal').classList.add('hidden');
+    if (replayViewChart) { replayViewChart.remove(); replayViewChart = null; }
+  };
 
   document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {

@@ -12,6 +12,7 @@
   <span class="brand-mini">🥋 K线道场</span>
   <button id="nav-train" class="nav-btn active">训练</button>
   <button id="nav-view" class="nav-btn">指数看板</button>
+  <button id="nav-mkt" class="nav-btn">行情</button>
   <span class="spacer"></span>
   <select id="theme-sel" title="界面主题"></select>
 </nav>
@@ -27,6 +28,7 @@
 
   <div class="stats-row">
     <div class="stats-bar" id="stats-bar" style="flex:1">加载战绩中…</div>
+    <button id="btn-history" class="ghost" title="复盘历史：查看/删除已保存的对局">📋 复盘历史</button>
     <button id="btn-mkt" class="ghost" title="baostock 增量更新行情（含新股），后台执行">⟳ 更新行情</button>
   </div>
 
@@ -295,6 +297,102 @@
   </div>
 </section>
 
+<!-- ======================== 行情看板（个股/ETF） ======================== -->
+<section id="screen-mkt" class="screen hidden">
+  <div class="view-layout">
+    <aside class="view-side">
+      <input id="mkt-search" type="text" placeholder="搜索代码/名称，点 ＋ 加自选…">
+      <div id="mkt-list" class="view-list"></div>
+      <div class="mini-tip" style="margin-top:8px">日线 baostock · 分钟 astock<br>收盘后更新（滞后一日）</div>
+    </aside>
+    <div class="view-main">
+      <div class="view-topbar">
+        <span id="mkt-title" class="view-title">搜索左侧添加自选标的</span>
+      </div>
+      <div class="view-toolbar">
+        <span class="tgroup" id="mkt-period-group">
+          <button data-period="5m" class="tg-btn">5分</button>
+          <button data-period="30m" class="tg-btn">30分</button>
+          <button data-period="D" class="tg-btn on">日K</button>
+          <button data-period="W" class="tg-btn">周K</button>
+          <button data-period="M" class="tg-btn">月K</button>
+          <button data-period="Y" class="tg-btn">年K</button>
+          <button id="mkt-adj" class="tg-btn" title="复权切换：前复权（锚定最新，与训练同口径）/ 不复权">前复权</button>
+          <button id="mkt-sync" class="tg-btn" title="联动副图：同标的不同周期、或另选自选标的对照；十字光标与可视范围与主图同步">⟷ 联动</button>
+        </span>
+        <span class="tgroup">
+          <button data-tg="ma" class="tg-btn on">MA</button>
+          <button data-tg="boll" class="tg-btn">BOLL</button>
+          <button data-tg="macd" class="tg-btn on">MACD</button>
+          <button data-tg="kdj" class="tg-btn">KDJ</button>
+          <button data-tg="vol" class="tg-btn on">VOL</button>
+          <button data-tg="chan" class="tg-btn" title="缠论笔+中枢">缠论</button>
+          <button data-tg="duan" class="tg-btn" title="缠论线段（实验性）">段</button>
+          <button data-tg="bei" class="tg-btn" title="背驰：同向相邻笔 MACD 柱面积比较">背</button>
+        </span>
+        <span class="tgroup">
+          <button data-draw="trend" class="tg-btn" title="点击图上两点画趋势线">╱ 趋势线</button>
+          <button data-draw="hline" class="tg-btn" title="点击图上画水平线">— 水平线</button>
+          <button data-draw="fib" class="tg-btn" title="两点画斐波那契回撤（磁吸 OHLC）">斐波</button>
+          <button data-draw="channel" class="tg-btn" title="三点画平行通道">通道</button>
+          <button data-draw="rect" class="tg-btn" title="两点画矩形区域">矩形</button>
+          <button data-draw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
+          <button data-draw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+          <button id="mkt-undo" class="tg-btn" title="撤销画线（Ctrl+Z）">⤺</button>
+          <button id="mkt-redo" class="tg-btn" title="重做（Ctrl+Y）">⤻</button>
+          <button id="mkt-clear-draw" class="tg-btn">清空</button>
+        </span>
+        <span class="tgroup">
+          <select id="mkt-tpl-sel" class="tg-btn" title="图表模板：一键应用已保存的周期+指标开关组合"></select>
+          <button id="mkt-tpl-save" class="tg-btn" title="保存当前组合为模板">💾</button>
+          <button id="mkt-tpl-del" class="tg-btn" title="删除选中的模板">🗑</button>
+        </span>
+      </div>
+      <div class="chart-wrap view-chart-wrap" id="mkt-chart-wrap">
+        <div id="mkt-chart"></div>
+        <div id="mkt-legend" class="view-legend"></div>
+      </div>
+      <canvas id="mkt-minimap" class="view-minimap" title="全历史缩略图：点击/拖动跳转可视区间"></canvas>
+      <div id="mkt-sub-wrap" class="hidden">
+        <div class="view-toolbar sub-toolbar">
+          <span class="tgroup">
+            <select id="mkt-sub-key" class="tg-btn" title="副图标的（默认同主图，限自选）"></select>
+            <button data-subp="D" class="tg-btn">日K</button>
+            <button data-subp="W" class="tg-btn on">周K</button>
+            <button data-subp="M" class="tg-btn">月K</button>
+            <button data-subp="Y" class="tg-btn">年K</button>
+          </span>
+          <span id="mkt-sub-title" class="view-title" style="font-size:12.5px;font-weight:400"></span>
+        </div>
+        <div id="mkt-sub" class="sub-chart"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 复盘历史弹层 -->
+<div id="hist-modal" class="modal hidden">
+  <div class="modal-box hist-box">
+    <h3>复盘历史</h3>
+    <div id="hist-body" class="hist-body">加载中…</div>
+    <div class="modal-btns">
+      <button id="hist-clear" class="ghost down-text" title="删除全部成绩与复盘（不可恢复）">🗑 清空全部</button>
+      <button id="hist-close" class="primary">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 复盘视图弹层 -->
+<div id="replay-modal" class="modal hidden">
+  <div class="modal-box replay-box">
+    <div id="replay-identity" class="replay-identity"></div>
+    <div class="chart-wrap replay-chart-wrap"><div id="replay-chart2"></div></div>
+    <div id="replay-summary" class="replay-summary"></div>
+    <div id="replay-trades" class="replay-trades"></div>
+    <div class="modal-btns"><button id="replay-close" class="primary">关闭</button></div>
+  </div>
+</div>
+
 <div id="toast" class="hidden"></div>
 
 <script src="vendor/lightweight-charts.js"></script>
@@ -303,6 +401,6 @@
 <script src="draw.js"></script>
 <script src="view.js"></script>
 <script src="app.js"></script>
-<script>View.init();</script>
+<script>View.init(); Mkt.init();</script>
 </body>
 </html>

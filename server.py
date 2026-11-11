@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import threading
 import time
@@ -117,6 +118,7 @@ def api_reveal(body: dict) -> dict:
 def api_finish(body: dict) -> dict:
     sid = (body or {}).get("sid", "")
     result = (body or {}).get("result") or {}
+    replay = (body or {}).get("replay") or {}
     with LOCK:
         secret = SESSIONS.get(sid)
     row = {
@@ -135,11 +137,59 @@ def api_finish(body: dict) -> dict:
               "trades", "wins", "losses", "bars_played", "duration_sec", "ended_by", "fill_mode"):
         if k in result:
             row[k] = result[k]
+    # 复盘包：前端出 bars/交易/权益曲线，服务端补揭晓身份+真实日期，一次落盘
+    if secret and replay.get("bars"):
+        safe_sid = re.sub(r"[^A-Za-z0-9_-]", "", sid) or "nosid"
+        fn = f"{time.strftime('%Y%m%d_%H%M%S')}_{safe_sid}.json"
+        pack = {
+            "sid": sid, "ts": row["ts"],
+            "code": secret["code"], "name": secret["name"], "board": secret["board"],
+            "category": secret["category"],
+            "start_date": secret["start_date"], "end_date": secret["end_date"],
+            "dates": secret["dates"],
+            "result": result,
+        }
+        pack.update(replay)
+        replays = RESULTS.parent / "replays"
+        replays.mkdir(parents=True, exist_ok=True)
+        (replays / fn).write_text(json.dumps(pack, ensure_ascii=False), encoding="utf-8")
+        row["replay"] = fn
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
     with LOCK:
         with RESULTS.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return {"ok": True}
+
+
+def api_results_delete(body: dict) -> dict:
+    """删单条（按 ts）或清空全部成绩；连带删复盘文件。"""
+    all_ = bool((body or {}).get("all"))
+    ts = (body or {}).get("ts") or ""
+    if all_:
+        with LOCK:
+            if RESULTS.exists():
+                RESULTS.unlink()
+        n = 0
+        replays = RESULTS.parent / "replays"
+        if replays.is_dir():
+            for f in replays.glob("*.json"):
+                f.unlink()
+                n += 1
+        return {"ok": True, "deleted": n}
+    rows = read_results()
+    keep, drop = [], []
+    for r in rows:
+        (drop if r.get("ts") == ts else keep).append(r)
+    for r in drop:
+        if r.get("replay"):
+            f = RESULTS.parent / "replays" / r["replay"]
+            if f.is_file():
+                f.unlink()
+    with LOCK:
+        RESULTS.parent.mkdir(parents=True, exist_ok=True)
+        RESULTS.write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep), encoding="utf-8")
+    return {"ok": True, "deleted": len(drop)}
 
 
 # ------------------------------------------------------- index 指数看板 ----
@@ -253,6 +303,64 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/api/stats":
             return self._json(stats())
+        if path == "/api/results":
+            return self._json({"rows": read_results()[::-1]})   # 新→旧
+        if path == "/api/market/kline":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            code = (q.get("code") or [""])[0].split(".")[0]
+            freq = (q.get("freq") or ["D"])[0]
+            adj = (q.get("adj") or ["qfq"])[0]
+            code = bz_data.normalize_code(code) or ""
+            if not code:
+                return self._json({"error": "未知代码"}, 404)
+            inst = bz_data.instruments()
+            nrow = inst[inst["code"] == code]
+            name = str(nrow.iloc[0]["name"]) if len(nrow) else code
+            if freq in ("5min", "30min", "1min", "15min", "60min"):
+                df = bz_data.mins_bars(code, freq)
+                if freq not in bz_data.mins_freqs(code) or not len(df):
+                    return self._json({"error": f"{code} 无 {freq} 分钟数据"}, 404)
+                df = df.tail(4000)                       # 分钟限最近 4000 根（全史太重）
+                fac = df["adj_factor"].to_numpy()
+                base = fac[-1]
+                if adj == "qfq" and base and base == base:
+                    for c in ("open", "high", "low", "close"):
+                        df[c] = df[c] * fac / base       # 与训练同一前复权口径：锚定末根
+                bars = [
+                    [str(t.trade_time), float(t.open), float(t.high), float(t.low),
+                     float(t.close), float(t.volume)]
+                    for t in df.itertuples()]
+                asof = str(df["trade_time"].iloc[-1])
+            else:
+                df = bz_data.daily(bz_data.kind_of(code), code)
+                if not len(df):
+                    return self._json({"error": f"{code} 无日线数据"}, 404)
+                fac = df["adj_factor"].to_numpy()
+                base = fac[-1]
+                if adj == "qfq" and base and base == base:
+                    for c in ("open", "high", "low", "close"):
+                        df[c] = df[c] * fac / base
+                bars = [
+                    [str(t.date.date()), float(t.open), float(t.high), float(t.low),
+                     float(t.close), float(t.volume)]
+                    for t in df.itertuples()]
+                asof = str(df["date"].iloc[-1].date())
+            return self._json({"code": code, "name": name, "freq": freq,
+                               "adj": adj, "asof": asof, "bars": bars})
+        if path == "/api/replay":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            fn = (q.get("file") or [""])[0]
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+\.json", fn):
+                return self._json({"error": "bad file name"}, 400)
+            f = RESULTS.parent / "replays" / fn
+            if not f.is_file():
+                return self._json({"error": "复盘不存在"}, 404)
+            try:
+                return self._json(json.loads(f.read_text(encoding="utf-8")))
+            except json.JSONDecodeError:
+                return self._json({"error": "复盘文件损坏"}, 500)
         if path == "/api/search":
             from urllib.parse import parse_qs, urlparse
             q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0]
@@ -332,6 +440,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "result": out})
             if path == "/api/market/update":
                 return self._json(start_market_update())
+            if path == "/api/results/delete":
+                return self._json(api_results_delete(body))
             return self._json({"error": "not found"}, 404)
         except Exception as e:  # noqa: BLE001
             sys.stderr.write(f"API error {path}: {e}\n")

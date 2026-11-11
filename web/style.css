@@ -250,6 +250,26 @@ td.side-sell { color: var(--down); font-weight: 600; }
   border: 1px solid var(--line); border-radius: 14px; padding: 20px;
 }
 .modal-box h3 { margin-bottom: 10px; font-size: 17px; }
+/* 复盘历史 / 复盘视图弹层 */
+.hist-box { width: 640px; }
+.hist-body { max-height: 55vh; overflow-y: auto; }
+.hist-body table, .replay-trades table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.hist-body th, .hist-body td, .replay-trades th, .replay-trades td {
+  padding: 5px 6px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.hist-body th, .replay-trades th { color: var(--dim); font-weight: 500; }
+button.mini {
+  background: transparent; border: 1px solid var(--line); color: var(--dim);
+  font-size: 12px; padding: 2px 8px; border-radius: 5px; cursor: pointer; margin-right: 4px;
+}
+button.mini:hover { color: var(--accent); border-color: var(--accent); }
+button.mini.danger:hover { color: var(--up); border-color: var(--up); }
+.down-text { color: var(--up); }
+.replay-box { width: 860px; max-width: 95vw; }
+.replay-identity { font-size: 14px; margin-bottom: 8px; }
+.replay-chart-wrap { position: relative; height: 360px; }
+.replay-summary { font-size: 12.5px; color: var(--dim); margin: 8px 0; }
+.replay-trades { max-height: 180px; overflow-y: auto; }
 .modal-info { color: var(--dim); font-size: 13px; display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; }
 .modal-info b { color: var(--text); }
 .pct-btns { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
