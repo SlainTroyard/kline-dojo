@@ -61,7 +61,7 @@ let revealChart = null, revealInfo = null;
 
 let trainPeriod = localStorage.getItem('bz_train_period') || 'D';
 const tToggles = Object.assign(
-  { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false },
+  { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false },
   JSON.parse(localStorage.getItem('bz_train_toggles') || '{}'));
 
 let selectedCodes = new Map();  // 本局自选标的 code → name
@@ -367,7 +367,7 @@ function renderTrainChart(refit = false) {
   })) : []);
   refillTrainIndicators(bars);
   overlay.setBars(bars);
-  overlay.setChan(tToggles.chan ? window.Ind.chanlun(bars) : { bis: [], zs: [] });
+  overlay.setChan(window.Ind.chanView(bars, tToggles));
 
   // 买卖标记吸附到所属周期 bar
   const mk = markers.map((m) => {
@@ -959,7 +959,48 @@ function bind() {
       overlay.setMode(overlay.mode === b.dataset.tdraw ? 'none' : b.dataset.tdraw);
     };
   });
-  $('train-clear-draw').onclick = () => { overlay && overlay.setLines([]); };
+  $('train-undo').onclick = () => { overlay && overlay.undo(); };
+  $('train-redo').onclick = () => { overlay && overlay.redo(); };
+  $('train-clear-draw').onclick = () => { overlay && overlay.clearAll(); };
+
+  // 图表模板（周期+指标开关组合，localStorage）
+  const TPL_KEY = 'bz_tpl_train';
+  const tpls = () => { try { return JSON.parse(localStorage.getItem(TPL_KEY) || '{}'); } catch { return {}; } };
+  const refreshTplSel = () => {
+    $('train-tpl-sel').innerHTML = '<option value="">模板…</option>' +
+      Object.keys(tpls()).map((k) => `<option value="${k}">${k}</option>`).join('');
+  };
+  refreshTplSel();
+  $('train-tpl-save').onclick = () => {
+    window.bzPrompt('模板名称：', '', (name) => {
+      if (!name) return;
+      const m = tpls();
+      m[name] = { period: trainPeriod, toggles: { ...tToggles } };
+      localStorage.setItem(TPL_KEY, JSON.stringify(m));
+      refreshTplSel();
+      $('train-tpl-sel').value = name;
+    });
+  };
+  $('train-tpl-del').onclick = () => {
+    const name = $('train-tpl-sel').value;
+    if (!name) return;
+    const m = tpls();
+    delete m[name];
+    localStorage.setItem(TPL_KEY, JSON.stringify(m));
+    refreshTplSel();
+  };
+  $('train-tpl-sel').onchange = () => {
+    const t = tpls()[$('train-tpl-sel').value];
+    if (!t) return;
+    if (t.period) {
+      trainPeriod = t.period;
+      localStorage.setItem('bz_train_period', trainPeriod);
+      document.querySelectorAll('[data-tp]').forEach((x) => x.classList.toggle('on', x.dataset.tp === trainPeriod));
+    }
+    Object.assign(tToggles, t.toggles || {});
+    applyTrainToggles(true);      // skipRender：下面统一 refit 渲染
+    renderTrainChart(true);
+  };
 
   $('modal-cancel').onclick = closeModal;
   $('modal').onclick = (e) => { if (e.target === $('modal')) closeModal(); };
@@ -990,6 +1031,12 @@ function bind() {
       return;
     }
     if ($('screen-train').classList.contains('hidden')) return;
+    // Ctrl 组合键只走撤销/重做（训练热键单键触发，避免 Ctrl+B/S 误开交易弹窗）
+    if (e.ctrlKey || e.metaKey) {
+      if (e.code === 'KeyZ' && !e.shiftKey) { overlay && overlay.undo(); }
+      else if (e.code === 'KeyY' || (e.code === 'KeyZ' && e.shiftKey)) { overlay && overlay.redo(); }
+      return;
+    }
     switch (e.code) {
       case 'Space': case 'ArrowRight': e.preventDefault(); advance(); break;
       case 'KeyB': openModal('buy'); break;

@@ -305,6 +305,9 @@ td.side-sell { color: var(--down); font-weight: 600; }
   font-size: 12.5px; padding: 5px 10px; border-radius: 6px;
 }
 .tg-btn.on { background: rgba(160,130,20,.16); color: var(--accent); font-weight: 600; }
+/* 模板下拉（select 复用 tg-btn 外观；appearance 去原生箭头由字符替代） */
+select.tg-btn { cursor: pointer; padding-right: 4px; }
+select.tg-btn option { background: var(--panel); color: var(--text); }
 .view-chart-wrap { flex: 1; position: relative; height: calc(100vh - 200px); min-height: 480px; }
 /* 遮住副图区背后的主轴刻度（单chart多pane方案中主轴刻度会画满全高，宽值域外推出负值误导） */
 .axis-cover {

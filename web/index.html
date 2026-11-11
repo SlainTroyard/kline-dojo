@@ -140,13 +140,26 @@
       <button data-tt="macd" class="tg-btn on">MACD</button>
       <button data-tt="kdj" class="tg-btn">KDJ</button>
       <button data-tt="vol" class="tg-btn on">VOL</button>
-      <button data-tt="chan" class="tg-btn">缠论</button>
+      <button data-tt="chan" class="tg-btn" title="缠论笔+中枢">缠论</button>
+      <button data-tt="duan" class="tg-btn" title="缠论线段（实验性：极值破坏法，未做特征序列，仅供目视参考）">段</button>
+      <button data-tt="bei" class="tg-btn" title="背驰：同向相邻笔 MACD 柱面积比较，价创新高/新低而面积收缩">背</button>
     </span>
     <span class="tgroup">
       <button data-tdraw="trend" class="tg-btn" title="点击图上两点画趋势线（本局有效）">╱ 趋势线</button>
       <button data-tdraw="hline" class="tg-btn" title="点击图上画水平线（本局有效）">— 水平线</button>
+      <button data-tdraw="fib" class="tg-btn" title="两点画斐波那契回撤（低→高或高→低，磁吸 OHLC）">斐波</button>
+      <button data-tdraw="channel" class="tg-btn" title="三点画平行通道：基线两点 + 第三点定宽度">通道</button>
+      <button data-tdraw="rect" class="tg-btn" title="两点画矩形区域">矩形</button>
+      <button data-tdraw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
       <button data-tdraw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+      <button id="train-undo" class="tg-btn" title="撤销画线（Ctrl+Z）">⤺</button>
+      <button id="train-redo" class="tg-btn" title="重做（Ctrl+Y / Ctrl+Shift+Z）">⤻</button>
       <button id="train-clear-draw" class="tg-btn">清空</button>
+    </span>
+    <span class="tgroup">
+      <select id="train-tpl-sel" class="tg-btn" title="图表模板：一键应用已保存的周期+指标开关组合"></select>
+      <button id="train-tpl-save" class="tg-btn" title="把当前周期+指标开关保存为模板">💾</button>
+      <button id="train-tpl-del" class="tg-btn" title="删除选中的模板">🗑</button>
     </span>
   </div>
 
@@ -234,13 +247,26 @@
           <button data-tg="macd" class="tg-btn on">MACD</button>
           <button data-tg="kdj" class="tg-btn">KDJ</button>
           <button data-tg="vol" class="tg-btn on">VOL</button>
-          <button data-tg="chan" class="tg-btn">缠论</button>
+          <button data-tg="chan" class="tg-btn" title="缠论笔+中枢">缠论</button>
+          <button data-tg="duan" class="tg-btn" title="缠论线段（实验性：极值破坏法，未做特征序列，仅供目视参考）">段</button>
+          <button data-tg="bei" class="tg-btn" title="背驰：同向相邻笔 MACD 柱面积比较，价创新高/新低而面积收缩">背</button>
         </span>
         <span class="tgroup">
           <button data-draw="trend" class="tg-btn" title="点击图上两点画趋势线">╱ 趋势线</button>
           <button data-draw="hline" class="tg-btn" title="点击图上画水平线">— 水平线</button>
+          <button data-draw="fib" class="tg-btn" title="两点画斐波那契回撤（低→高或高→低，磁吸 OHLC）">斐波</button>
+          <button data-draw="channel" class="tg-btn" title="三点画平行通道：基线两点 + 第三点定宽度">通道</button>
+          <button data-draw="rect" class="tg-btn" title="两点画矩形区域">矩形</button>
+          <button data-draw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
           <button data-draw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+          <button id="view-undo" class="tg-btn" title="撤销画线（Ctrl+Z）">⤺</button>
+          <button id="view-redo" class="tg-btn" title="重做（Ctrl+Y / Ctrl+Shift+Z）">⤻</button>
           <button id="view-clear-draw" class="tg-btn">清空</button>
+        </span>
+        <span class="tgroup">
+          <select id="view-tpl-sel" class="tg-btn" title="图表模板：一键应用已保存的周期+指标开关组合"></select>
+          <button id="view-tpl-save" class="tg-btn" title="把当前周期+指标开关保存为模板">💾</button>
+          <button id="view-tpl-del" class="tg-btn" title="删除选中的模板">🗑</button>
         </span>
       </div>
       <div class="chart-wrap view-chart-wrap" id="view-chart-wrap">

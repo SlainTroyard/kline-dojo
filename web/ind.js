@@ -117,17 +117,20 @@ window.Ind = (() => {
     return out;
   }
 
-  /* ---------------- 简化缠论：合并K → 分型 → 笔 → 中枢 ----------------
+  /* ---------------- 简化缠论：合并K → 分型 → 笔 → 中枢 → 线段/背驰 ----------------
    * 说明：这是工程简化版。
    *  - 合并K：标准包含关系处理（方向高低取合并）
    *  - 分型：合并K三连的顶/底分型
    *  - 笔：顶底交替 + 两分型间隔 ≥4 根合并K + 同型更极端则前移（简化：不检查笔内穿越）
    *  - 中枢：连续三笔的重叠区间，后续笔有重叠则延伸
-   *  线段（特征序列）因定义多义性强，不自动画——可用画线工具手动补。
+   *  - 线段（实验性）：极值破坏法——反向笔的端点突破本段起点价则本段在段内
+   *    极值处终结（未做特征序列分型，与严格定义有出入，仅供目视参考）
+   *  - 背驰：同向相邻两笔比较 MACD 柱面积（Σ|hist|），价创新高/新低而面积
+   *    收缩即标记（顶背驰/底背驰）
    */
   function chanlun(bars) {
     const n = bars.length;
-    if (n < 30) return { bis: [], zs: [] };
+    if (n < 30) return { bis: [], zs: [], duans: [], divs: [] };
 
     // 1) 合并K线（记录极值所在原始bar索引）
     const mg = [];   // {hi,lo,iHi,iLo,i0,i1}
@@ -178,7 +181,7 @@ window.Ind = (() => {
       }
     }
     if (cand && pts.length) pts.push(cand);
-    if (pts.length < 2) return { bis: [], zs: [] };
+    if (pts.length < 2) return { bis: [], zs: [], duans: [], divs: [] };
 
     const bis = [];
     for (let k = 0; k + 1 < pts.length; k++) {
@@ -210,8 +213,63 @@ window.Ind = (() => {
         k += 1;
       }
     }
-    return { bis, zs };
+
+    // 5) 线段（实验性，极值破坏法）：段起点→段内极值端点连线；
+    //    反向笔端点突破段起点价 → 本段终结于极值端点，新段自极值端点起
+    const duans = [];
+    {
+      let st = { t: bis[0].t0, p: bis[0].p0 };
+      let dir = bis[0].p1 > bis[0].p0 ? 1 : -1;
+      let ep = { t: bis[0].t1, p: bis[0].p1 };
+      for (let i = 1; i < bis.length; i++) {
+        const b = bis[i];
+        const up = b.p1 > b.p0;
+        if (up === (dir > 0)) {                 // 同向：延伸段内极值
+          if (dir > 0 ? b.p1 > ep.p : b.p1 < ep.p) ep = { t: b.t1, p: b.p1 };
+        } else if (dir > 0 ? b.p1 < st.p : b.p1 > st.p) {   // 破坏段起点
+          duans.push({ t0: st.t, p0: st.p, t1: ep.t, p1: ep.p });
+          st = ep;
+          dir = -dir;
+          ep = { t: b.t1, p: b.p1 };
+        }
+      }
+      duans.push({ t0: st.t, p0: st.p, t1: ep.t, p1: ep.p });
+    }
+
+    // 6) 背驰：同向相邻笔（bi i 与 i+2），价更极端而 MACD 柱面积（Σ|hist|）收缩
+    const divs = [];
+    {
+      const hist = macd(bars.map((b) => b.c)).hist;
+      const area = (b) => {
+        let s = 0;
+        for (let i = b.i0; i <= b.i1; i++) s += Math.abs(hist[i]);
+        return s;
+      };
+      for (let i = 0; i + 2 < bis.length; i++) {
+        const a = bis[i], b = bis[i + 2];
+        const up = a.p1 > a.p0;
+        if (up && b.p1 > a.p1 && area(b) < area(a)) {
+          divs.push({ t: b.t1, p: b.p1, type: 'top' });
+        } else if (!up && b.p1 < a.p1 && area(b) < area(a)) {
+          divs.push({ t: b.t1, p: b.p1, type: 'bot' });
+        }
+      }
+    }
+
+    return { bis, zs, duans, divs };
   }
 
-  return { sma, ema, macd, boll, kdj, aggregate, chanlun };
+  /** 按开关组装缠论视图：{chan:笔+中枢, duan:线段, bei:背驰} 任一开则画笔作参照 */
+  function chanView(bars, tg) {
+    if (!(tg.chan || tg.duan || tg.bei)) return { bis: [], zs: [], duans: [], divs: [] };
+    const c = chanlun(bars);
+    return {
+      bis: c.bis,
+      zs: tg.chan ? c.zs : [],
+      duans: tg.duan ? c.duans : [],
+      divs: tg.bei ? c.divs : [],
+    };
+  }
+
+  return { sma, ema, macd, boll, kdj, aggregate, chanlun, chanView };
 })();

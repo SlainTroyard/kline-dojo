@@ -16,7 +16,7 @@ window.View = (() => {
   let rawBars = [];                       // 全量日线
   let period = localStorage.getItem('bz_view_period') || 'D';
   const toggles = Object.assign(
-    { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false },
+    { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false },
     JSON.parse(localStorage.getItem('bz_view_toggles') || '{}'));
 
   const $ = (id) => document.getElementById(id);
@@ -76,6 +76,7 @@ window.View = (() => {
 
     overlay = new window.Overlay(chart, candle, $('view-chart-wrap'), {
       onModeChange: syncDrawBtns,
+      onChange: saveLines,
     });
     chart.subscribeClick((param) => {
       if (overlay.handleClick(param)) saveLines();
@@ -153,7 +154,7 @@ window.View = (() => {
     refillIndicators(bars);
 
     overlay.setBars(bars);
-    overlay.setChan(toggles.chan ? window.Ind.chanlun(bars) : { bis: [], zs: [] });
+    overlay.setChan(window.Ind.chanView(bars, toggles));
 
     // 默认显示最近 ~260 根（不足 260 根的周期从头铺满）
     chart.timeScale().setVisibleLogicalRange({
@@ -188,7 +189,7 @@ window.View = (() => {
     });
     localStorage.setItem('bz_view_toggles', JSON.stringify(toggles));
     if (overlay) {
-      overlay.setChan(toggles.chan ? window.Ind.chanlun(window.Ind.aggregate(rawBars, period)) : { bis: [], zs: [] });
+      overlay.setChan(window.Ind.chanView(window.Ind.aggregate(rawBars, period), toggles));
     }
   }
 
@@ -288,6 +289,26 @@ window.View = (() => {
     localStorage.setItem(lkey(), JSON.stringify(overlay.lines));
   }
 
+  /* ---------------- 图表模板（周期+指标开关组合，localStorage） ---------------- */
+  const TPL_KEY = 'bz_tpl_view';
+  function tpls() {
+    try { return JSON.parse(localStorage.getItem(TPL_KEY) || '{}'); } catch { return {}; }
+  }
+  function refreshTplSel() {
+    $('view-tpl-sel').innerHTML = '<option value="">模板…</option>' +
+      Object.keys(tpls()).map((k) => `<option value="${k}">${k}</option>`).join('');
+  }
+  function applyTpl(t) {
+    if (t.period) {
+      period = t.period;
+      localStorage.setItem('bz_view_period', period);
+      document.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x.dataset.period === period));
+    }
+    Object.assign(toggles, t.toggles || {});
+    applyToggles();
+    renderAll();
+  }
+
   /* ---------------- 初始化 ---------------- */
   function bind() {
     document.querySelectorAll('[data-period]').forEach((b) => {
@@ -308,13 +329,48 @@ window.View = (() => {
         overlay.setMode(overlay.mode === m ? 'none' : m);   // 高亮经 onModeChange 同步
       };
     });
-    $('view-clear-draw').onclick = () => { overlay.setLines([]); saveLines(); };
+    $('view-undo').onclick = () => { if (overlay.undo()) saveLines(); };
+    $('view-redo').onclick = () => { if (overlay.redo()) saveLines(); };
+    $('view-clear-draw').onclick = () => { overlay.clearAll(); saveLines(); };
     $('view-refresh').onclick = refreshData;
     $('view-search').oninput = renderList;
+
+    // 图表模板
+    refreshTplSel();
+    $('view-tpl-save').onclick = () => {
+      window.bzPrompt('模板名称：', '', (name) => {
+        if (!name) return;
+        const m = tpls();
+        m[name] = { period, toggles: { ...toggles } };
+        localStorage.setItem(TPL_KEY, JSON.stringify(m));
+        refreshTplSel();
+        $('view-tpl-sel').value = name;
+      });
+    };
+    $('view-tpl-del').onclick = () => {
+      const name = $('view-tpl-sel').value;
+      if (!name) return;
+      const m = tpls();
+      delete m[name];
+      localStorage.setItem(TPL_KEY, JSON.stringify(m));
+      refreshTplSel();
+    };
+    $('view-tpl-sel').onchange = () => {
+      const t = tpls()[$('view-tpl-sel').value];
+      if (t) applyTpl(t);
+    };
 
     // 顶部导航：训练 / 看板
     $('nav-train').onclick = () => switchTab('train');
     $('nav-view').onclick = () => switchTab('view');
+
+    // 撤销/重做快捷键（仅看板页签激活时生效；输入框内不拦）
+    document.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+      if ($('screen-view').classList.contains('hidden') || !overlay) return;
+      if (e.code === 'KeyZ' && !e.shiftKey) { if (overlay.undo()) saveLines(); }
+      else if (e.code === 'KeyY' || (e.code === 'KeyZ' && e.shiftKey)) { if (overlay.redo()) saveLines(); }
+    });
   }
 
   function switchTab(which) {
