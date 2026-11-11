@@ -261,6 +261,43 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"instruments": bz_index.list_status()})
         if path == "/api/market/status":
             return self._json(market_update_status())
+        if path == "/api/mins/coverage":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            code = (q.get("code") or [""])[0].split(".")[0]
+            if not bz_data.mins_available():
+                return self._json({"available": False, "hint":
+                    "分钟数据未挂载：需自备数据目录并设 BZ_MINS_ROOT（见 README「分钟线」小节）"})
+            if not bz_data.normalize_code(code):
+                return self._json({"error": f"未知代码 {code}"}, 404)
+            return self._json({"available": True, "code": code,
+                               "freqs": bz_data.mins_coverage(code)})
+        if path == "/api/mins/kline":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            code = (q.get("code") or [""])[0].split(".")[0]
+            freq = (q.get("freq") or ["5min"])[0]
+            start = (q.get("start") or [""])[0]
+            end = (q.get("end") or [""])[0]
+            limit = max(1, min(60000, int((q.get("limit") or ["20000"])[0])))
+            if not bz_data.mins_available():
+                return self._json({"error": "分钟数据未挂载（见 README「分钟线」小节）"}, 404)
+            if freq not in bz_data.mins_freqs(code):
+                return self._json({"error": f"{code} 无 {freq} 数据"}, 404)
+            df = bz_data.mins_bars(code, freq)
+            if start:
+                df = df[df["trade_time"] >= start]
+            if end:
+                df = df[df["trade_time"] <= end + " 23:59:59"]
+            df = df.tail(limit)
+            # bars: [ts, o, h, l, c, v, amount, adj_factor]（raw 不复权 + 因子列，
+            # 前复权锚定由调用方按与日线相同的 等比缩放 处理）
+            bars = [
+                [str(r.trade_time), float(r.open), float(r.high), float(r.low),
+                 float(r.close), float(r.volume), float(r.amount),
+                 None if r.adj_factor != r.adj_factor else float(r.adj_factor)]
+                for r in df.itertuples()]
+            return self._json({"code": code, "freq": freq, "bars": bars})
         if path == "/api/index/kline":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)

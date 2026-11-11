@@ -148,3 +148,80 @@ def search(q: str, limit: int = 20) -> list[dict]:
          "type": str(r["type"]), "exchange": str(r["exchange"])}
         for _, r in m.head(limit).iterrows()
     ]
+
+
+# ------------------------------------------------------------- 分钟线 ----
+# 姊妹项目 astock 的 tushare stk_mins 副本，只读挂接、不随仓库分发（GitHub 用户
+# 默认无分钟数据，其余功能不受影响；想用分钟线见 README「分钟线」小节自行抓取）。
+# 探测顺序：BZ_MINS_ROOT → ../astock/data/parquet/mins → 无
+_MINS_CANDIDATES = [
+    os.environ.get("BZ_MINS_ROOT"),
+    _ROOT.parent / "astock" / "data" / "parquet" / "mins",
+]
+MINS = next((Path(p) for p in _MINS_CANDIDATES if p and Path(p).exists()), None)
+
+
+def mins_available() -> bool:
+    """分钟数据根是否挂载（页面/API 据此决定是否展示分钟入口）。"""
+    return MINS is not None
+
+
+def mins_freqs(code: str) -> list[str]:
+    """该标的可用的分钟周期（如 ['5min', '30min']）；未挂载/无该标的返回 []。"""
+    if MINS is None:
+        return []
+    d = MINS / code
+    if not d.is_dir():
+        return []
+    return sorted(p.stem for p in d.glob("*.parquet"))
+
+
+@functools.lru_cache(maxsize=4096)
+def mins_bars(code: str, freq: str) -> pd.DataFrame:
+    """分钟线（tushare 原始不复权口径，与本项目日线同量纲）。
+
+    返回列：trade_time / open / high / low / close / volume / amount / adj_factor。
+    adj_factor 按交易日从本项目日线的累计后复权因子映射（缺日向前填充）——
+    分钟 bar 与同日日线共用一个因子，训练前复权锚定算法（因子等比缩放）可
+    直接套用，跨源一致。
+
+    数据质量边界（实证 000001/600519 全量比对，见 README）：open/收盘与日线
+    逐位一致；tushare 分钟 high/low 丢失盘中瞬间极值（日线 high/low 为准）；
+    约 10% 交易日分钟量能略缺。
+    """
+    empty = pd.DataFrame(columns=[
+        "trade_time", "open", "high", "low", "close", "volume", "amount", "adj_factor"])
+    if MINS is None:
+        return empty
+    path = MINS / code / f"{freq}.parquet"
+    if not path.exists():
+        return empty
+    df = pd.read_parquet(path)
+    if not len(df):
+        return empty
+    df = df.sort_values("trade_time").reset_index(drop=True)
+    # 交易日 → adj_factor（分钟 bar 的日期取自 trade_time.date()）
+    d = daily(kind_of(code), code)[["date", "adj_factor"]].dropna(subset=["adj_factor"])
+    if len(d):
+        day = pd.to_datetime(df["trade_time"]).dt.normalize()
+        fac = pd.merge(day.rename("date").to_frame(), d, on="date", how="left")["adj_factor"]
+        fac = fac.ffill().bfill()          # 日线未覆盖的早期分钟沿用最近因子
+        df["adj_factor"] = fac.to_numpy()
+    else:
+        df["adj_factor"] = float("nan")
+    return df
+
+
+def mins_coverage(code: str) -> list[dict]:
+    """分钟数据概览：[{freq, start, end, bars}]，供 API/前端展示。"""
+    out = []
+    for freq in mins_freqs(code):
+        df = mins_bars(code, freq)
+        if len(df):
+            out.append({
+                "freq": freq,
+                "start": str(df["trade_time"].iloc[0]),
+                "end": str(df["trade_time"].iloc[-1]),
+                "bars": int(len(df)),
+            })
+    return out

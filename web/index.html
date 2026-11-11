@@ -240,6 +240,7 @@
           <button data-period="W" class="tg-btn">周K</button>
           <button data-period="M" class="tg-btn">月K</button>
           <button data-period="Y" class="tg-btn">年K</button>
+          <button id="view-sync" class="tg-btn" title="联动副图：同标的不同周期、或另选标的对照；十字光标与可视范围与主图同步">⟷ 联动</button>
         </span>
         <span class="tgroup">
           <button data-tg="ma" class="tg-btn on">MA</button>
@@ -272,6 +273,20 @@
       <div class="chart-wrap view-chart-wrap" id="view-chart-wrap">
         <div id="view-chart"></div>
         <div id="view-legend" class="view-legend"></div>
+      </div>
+      <canvas id="view-minimap" class="view-minimap" title="全历史缩略图：点击/拖动跳转可视区间"></canvas>
+      <div id="view-sub-wrap" class="hidden">
+        <div class="view-toolbar sub-toolbar">
+          <span class="tgroup">
+            <select id="view-sub-key" class="tg-btn" title="副图标的（默认同主图）"></select>
+            <button data-subp="D" class="tg-btn">日K</button>
+            <button data-subp="W" class="tg-btn on">周K</button>
+            <button data-subp="M" class="tg-btn">月K</button>
+            <button data-subp="Y" class="tg-btn">年K</button>
+          </span>
+          <span id="view-sub-title" class="view-title" style="font-size:12.5px;font-weight:400"></span>
+        </div>
+        <div id="view-sub" class="sub-chart"></div>
       </div>
     </div>
   </div>
