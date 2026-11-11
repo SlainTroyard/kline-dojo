@@ -531,8 +531,8 @@ class Updater:
             if not info:
                 continue
             # fields: code, codeName, ipoDate, outDate, type, status
-            _, name, ipo, out, typ, status = info[0]
-            if out or status != "1":
+            _, name, ipo, out_date, typ, status = info[0]
+            if out_date or status != "1":
                 continue
             kind = "etfs" if typ == "5" else "stocks"
             if typ not in ("1", "5"):
