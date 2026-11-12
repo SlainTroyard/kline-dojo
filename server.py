@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 import bz_data  # noqa: E402
 import bz_index  # noqa: E402
+import bz_quote  # noqa: E402
 import bz_session  # noqa: E402
 
 WEB = ROOT / "web"
@@ -406,6 +407,18 @@ class Handler(BaseHTTPRequestHandler):
                  None if r.adj_factor != r.adj_factor else float(r.adj_factor)]
                 for r in df.itertuples()]
             return self._json({"code": code, "freq": freq, "bars": bars})
+        if path == "/api/market/quotes":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            raw = (q.get("codes") or [""])[0]
+            codes = []
+            for c in raw.split(","):
+                c = c.strip().split(".")[0]
+                if c:
+                    codes.append(bz_data.normalize_code(c) or c)
+            qs, trading = bz_quote.quotes(codes)
+            return self._json({"quotes": qs, "trading": trading,
+                               "asof": time.strftime("%H:%M:%S")})
         if path == "/api/index/kline":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)

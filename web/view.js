@@ -369,6 +369,39 @@ window.createBoard = function createBoard(cfg) {
     }
   }
 
+  /** 画线样式浮层：颜色/粗细/虚实；有选中线作用于选中，否则设为新线默认 */
+  function buildDrawStyle() {
+    const pop = $('draw-style-pop');
+    const btn = $('draw-style');
+    if (!pop || !btn) return;
+    const COLORS = ['#f0b90b', '#e0483e', '#4a90e2', '#1fa06b', '#c77dff', '#e6ebf4'];
+    pop.innerHTML =
+      `<div class="ds-row"><span class="ds-lab">颜色</span><span class="ds-colors">` +
+      COLORS.map((c) => `<button class="ds-c" data-color="${c}" style="background:${c}" title="${c}"></button>`).join('') +
+      `</span></div>` +
+      `<div class="ds-row"><span class="ds-lab">粗细</span>` +
+      `<button class="ds-b" data-width="1">细</button>` +
+      `<button class="ds-b" data-width="1.6">中</button>` +
+      `<button class="ds-b" data-width="2.6">粗</button></div>` +
+      `<div class="ds-row"><span class="ds-lab">线型</span>` +
+      `<button class="ds-b" data-dash="0">实线</button>` +
+      `<button class="ds-b" data-dash="1">虚线</button></div>` +
+      `<div class="ds-row"><button class="ds-del" data-del="1">删除选中线</button></div>`;
+    pop.onclick = (e) => {
+      const t = e.target.closest('button');
+      if (!t || !overlay) return;
+      e.stopPropagation();
+      if (t.dataset.color) overlay.setStyle({ color: t.dataset.color });
+      else if (t.dataset.width) overlay.setStyle({ width: Number(t.dataset.width) });
+      else if (t.dataset.dash) overlay.setStyle({ dash: t.dataset.dash === '1' });
+      else if (t.dataset.del) overlay.deleteSelected();
+    };
+    btn.onclick = (e) => { e.stopPropagation(); pop.classList.toggle('hidden'); };
+    document.addEventListener('click', (e) => {
+      if (!pop.classList.contains('hidden') && !pop.contains(e.target) && e.target !== btn) pop.classList.add('hidden');
+    });
+  }
+
   /** MA 周期勾选浮层：勾选即时生效（本板持久化） */
   function buildMaMenu() {
     const menu = $('ma-menu');
@@ -483,6 +516,7 @@ window.createBoard = function createBoard(cfg) {
       insts = watchlist.map((w) => ({ key: w.code, name: w.name, group: '自选' }));
       renderList();
       fillSubSel();
+      refreshQuotes();                               // 进入/刷新自选后立刻取行情
       return;
     }
     const d = await fetch('/api/index/list').then((r) => r.json());
@@ -513,10 +547,14 @@ window.createBoard = function createBoard(cfg) {
       // 自选 + 搜索结果（/api/search 添加到自选）；自选行悬停出现 ✕ 可移除
       const mk = (it, extra, onDel) => {
         const el = document.createElement('div');
-        el.className = 'list-item' + (it.key === curKey ? ' active' : '');
+        el.className = 'list-item' + (it.key === curKey ? ' active' : '') + (onDel ? ' has-q' : '');
         el.dataset.key = it.key;
-        el.innerHTML = `<span class="n">${it.name}</span><span class="d">${extra || ''}</span>` +
-          (onDel ? '<span class="rm" title="从自选移除">✕</span>' : '');
+        if (onDel) el.dataset.code = it.key;
+        el.innerHTML = onDel
+          ? `<span class="n">${it.name}</span><span class="px"></span>` +
+            `<span class="d">${it.key}</span><span class="pc"></span>` +
+            '<span class="rm" title="从自选移除">✕</span>'
+          : `<span class="n">${it.name}</span><span class="d">${extra || ''}</span>`;
         el.onclick = () => {
           if (extra === '＋') addToWatchlist(it);
           else if (extra === '✓') removeFromWatchlist(it.key);   // 搜索命中已在自选：点击移出
@@ -543,6 +581,7 @@ window.createBoard = function createBoard(cfg) {
       }
       if (!insts.length) box.innerHTML = '<div class="list-group">自选为空：搜索代码/名称添加</div>';
       for (const it of insts) mk(it, it.key, true);   // 副文本显示代码 + 悬停 ✕
+      paintQuotes();                                  // 有缓存快照先填上，等轮询再刷新
       return;
     }
     for (const g of ['A股', '海外']) {
@@ -565,6 +604,37 @@ window.createBoard = function createBoard(cfg) {
   }
 
   let watchlist = [];
+  let quotes = {};                       // 实时行情快照 {code: quote}
+  let quoteAsOf = '';                    // 快照时间（服务端）
+
+  /** 拉自选实时行情（腾讯源经服务端缓存，60s 轮询；不在前台不拉） */
+  async function refreshQuotes() {
+    if (cfg.mode !== 'market' || root.classList.contains('hidden')) return;
+    const codes = watchlist.map((w) => w.code).slice(0, 80);
+    if (!codes.length) return;
+    try {
+      const d = await fetch('/api/market/quotes?codes=' + codes.join(',')).then((r) => r.json());
+      if (d.error) return;
+      quotes = d.quotes || {};
+      quoteAsOf = d.asof || '';
+      paintQuotes();
+    } catch { /* 行情非关键路径，失败静默 */ }
+  }
+
+  function paintQuotes() {
+    root.querySelectorAll('#mkt-list .list-item[data-code]').forEach((el) => {
+      const q = quotes[el.dataset.code];
+      if (!q || !(q.price > 0)) return;
+      const cls = q.pct >= 0 ? 'up' : 'down';
+      const px = el.querySelector('.px');
+      const pc = el.querySelector('.pc');
+      if (px) { px.textContent = q.price.toFixed(2); px.className = 'px ' + cls; }
+      if (pc) { pc.textContent = (q.pct >= 0 ? '+' : '') + q.pct.toFixed(2) + '%'; pc.className = 'pc ' + cls; }
+      el.title = `${q.name} ${q.price.toFixed(2)} ${(q.pct >= 0 ? '+' : '') + q.pct.toFixed(2)}%` +
+        (q.time ? ` · ${q.time}` : '') + (quoteAsOf ? `（快照 ${quoteAsOf}）` : '');
+    });
+  }
+
   /** 自选移除：同步 localStorage；移除的是当前标的则切到下一个，空则清空图表 */
   function removeFromWatchlist(code) {
     watchlist = watchlist.filter((w) => w.code !== code);
@@ -574,6 +644,7 @@ window.createBoard = function createBoard(cfg) {
       if (insts.length) select(insts[0].key);
       else clearChart();
     }
+    refreshQuotes();
   }
 
   /** 自选清空后的空图表状态（保留画线设置不动，仅清数据） */
@@ -604,6 +675,7 @@ window.createBoard = function createBoard(cfg) {
     localStorage.setItem('bz_watchlist', JSON.stringify(watchlist));
     loadList();
     select(code);
+    refreshQuotes();
   }
 
   /** 本板数据拉取：指数 /api/index/kline；个股/ETF /api/market/kline（日线或分钟） */
@@ -859,6 +931,7 @@ window.createBoard = function createBoard(cfg) {
       b.onclick = () => { toggles[b.dataset.tg] = !toggles[b.dataset.tg]; applyToggles(); updateLegend(null); };
     });
     buildMaMenu();
+    buildDrawStyle();
     root.querySelectorAll('[data-draw]').forEach((b) => {
       b.onclick = () => {
         const m = b.dataset.draw;
@@ -931,12 +1004,17 @@ window.createBoard = function createBoard(cfg) {
       .then(() => { if (!curKey && insts.length) select(cfg.mode === 'market' ? insts[0].key : 'sh000300'); })
       .catch((e) => { $('title').textContent = `列表加载失败：${e.message}`; });
     if (syncOn && !subChart) applySync(true);   // 恢复上次的联动状态
+    if (cfg.mode === 'market') refreshQuotes();
   }
 
   function init() {
     if (inited) return;
     inited = true;
     bind();
+    if (cfg.mode === 'market') {
+      setInterval(refreshQuotes, 60 * 1000);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshQuotes(); });
+    }
     // 联动按钮初始高亮（进入看板前也保持记忆状态）
     $('sync').classList.toggle('on', syncOn);
 

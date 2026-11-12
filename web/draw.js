@@ -67,8 +67,11 @@ window.Overlay = class Overlay {
     this.bars = [];            // 当前周期 bars [{d,o,h,l,c,v}]（吸附日期用）
     this.lines = [];           // 用户画线
     this.chan = { bis: [], zs: [], duans: [], divs: [] };
-    this.mode = 'none';        // none | trend | hline | fib | channel | rect | text | del
+    this.mode = 'none';        // none | trend | hline | fib | channel | rect | drect | pen | text | select | del
     this.pts = [];             // 多点工具已落点 [{d, p}]
+    this.style = { color: null, width: null, dash: null };    // 新画线默认样式（null=按类型取主题默认）
+    this.selected = null;      // 选择模式下选中的线下标
+    this._drag = null;         // 拖拽绘制中的临时状态 {type,start,cur,pts}
     this.undoStack = [];       // 撤销栈（lines 快照，深 50）
     this.redoStack = [];
 
@@ -86,6 +89,13 @@ window.Overlay = class Overlay {
 
     const rerender = () => this.redraw();
     chart.timeScale().subscribeVisibleLogicalRangeChange(rerender);
+    // 拖拽绘制（框选/涂鸦）：mousedown 在容器，move/up 挂 window（拖出画布也能收尾）
+    this._hDown = (e) => this._onDown(e);
+    this._hMove = (e) => this._onMove(e);
+    this._hUp = (e) => this._onUp(e);
+    container.addEventListener('mousedown', this._hDown);
+    window.addEventListener('mousemove', this._hMove);
+    window.addEventListener('mouseup', this._hUp);
     this._ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(rerender) : null;
     if (this._ro) this._ro.observe(container);
     Overlay._byContainer.set(container, this);
@@ -94,6 +104,9 @@ window.Overlay = class Overlay {
   /** 释放 ResizeObserver（主题重建时由下一个实例的构造调用） */
   destroy() {
     if (this._ro) this._ro.disconnect();
+    if (this._hDown) this.container.removeEventListener('mousedown', this._hDown);
+    if (this._hMove) window.removeEventListener('mousemove', this._hMove);
+    if (this._hUp) window.removeEventListener('mouseup', this._hUp);
     Overlay._byContainer.delete(this.container);
   }
 
@@ -114,10 +127,67 @@ window.Overlay = class Overlay {
     this.redraw();
   }
   setMode(m) {
+    const drag = (m === 'drect' || m === 'pen');
+    // 拖拽绘制时禁用图表平移/缩放，避免和图表手势打架
+    this.chart.applyOptions({ handleScroll: !drag, handleScale: !drag });
+    this.container.style.cursor = m === 'none' ? '' : (m === 'select' ? 'default' : 'crosshair');
+    if (m !== 'select') this.selected = null;
     this.mode = m;
     this.pts = [];
+    this._drag = null;
     this.redraw();
     if (this.onModeChange) this.onModeChange(m);
+  }
+
+  /** 样式：作用于「选中的线」，否则作为新画线默认样式 */
+  setStyle(patch) {
+    Object.assign(this.style, patch);
+    if (this.selected != null && this.lines[this.selected]) {
+      this._pushUndo();                        // 先快照再改，撤销回到旧样式
+      const ln = this.lines[this.selected];
+      ln.st = Object.assign({}, ln.st, patch);
+      this.redraw();
+      if (this.onChange) this.onChange();
+    }
+  }
+
+  /** 删除选中的线（选择模式） */
+  deleteSelected() {
+    if (this.selected == null || !this.lines[this.selected]) return false;
+    this._pushUndo();
+    this.lines.splice(this.selected, 1);
+    this.selected = null;
+    this.redraw();
+    if (this.onChange) this.onChange();
+    return true;
+  }
+
+  /** 线样式合并：颜色/粗细/虚实（未设置取主题默认） */
+  _st(ln) {
+    const T = window.BzTheme.colors();
+    const def = {
+      trend: T.trend, hline: T.hline, fib: T.fib, channel: T.channel,
+      rect: T.rect, drect: T.rect, pen: T.trend, text: T.note,
+    }[ln.type] || T.trend;
+    const s = ln.st || {};
+    return {
+      color: s.color || def,
+      width: s.width || ((ln.type === 'drect' || ln.type === 'pen') ? 2 : 1.6),
+      dash: s.dash != null ? !!s.dash : (ln.type === 'rect'),
+    };
+  }
+
+  /** 屏幕坐标 → {d,p}（拖拽绘制用） */
+  _evPos(e) {
+    if (!this.bars.length) return null;
+    const r = this.container.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    const p = this.series.coordinateToPrice(y);
+    const li = this.chart.timeScale().coordinateToLogical(x);
+    if (p == null || li == null) return null;
+    const i = Math.max(0, Math.min(this.bars.length - 1, Math.round(li)));
+    return { d: this.bars[i].d, p, x, y };
   }
 
   /* ---------------- 撤销 / 重做 ---------------- */
@@ -178,6 +248,55 @@ window.Overlay = class Overlay {
     return (best && best.dist <= 12) ? best.price : null;
   }
 
+  /* ---------------- 拖拽绘制（drect 框选 / pen 涂鸦） ---------------- */
+  _onDown(e) {
+    if (this.mode !== 'drect' && this.mode !== 'pen') return;
+    if (e.button !== 0) return;
+    const pos = this._evPos(e);
+    if (!pos) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this._drag = { type: this.mode, start: pos, cur: pos, pts: [pos] };
+    this.redraw();
+  }
+
+  _onMove(e) {
+    const D = this._drag;
+    if (!D) return;
+    const pos = this._evPos(e);
+    if (!pos) return;
+    D.cur = pos;
+    if (D.type === 'pen') {
+      const last = D.pts[D.pts.length - 1];
+      if (!last || Math.hypot(pos.x - last.x, pos.y - last.y) >= 3) D.pts.push(pos);
+    }
+    this.redraw();
+  }
+
+  _onUp() {
+    const D = this._drag;
+    if (!D) return;
+    this._drag = null;
+    let ln = null;
+    if (D.type === 'drect') {
+      const dx = Math.abs(D.cur.x - D.start.x);
+      const dy = Math.abs(D.cur.y - D.start.y);
+      if (dx >= 5 && dy >= 5) {
+        ln = { type: 'drect', d1: D.start.d, p1: D.start.p, d2: D.cur.d, p2: D.cur.p };
+      }
+    } else if (D.type === 'pen' && D.pts.length >= 3) {
+      ln = { type: 'pen', pts: D.pts.map((q) => ({ d: q.d, p: q.p })) };
+    }
+    if (ln) {
+      ln.st = { ...this.style };
+      this._pushUndo();
+      this.lines.push(ln);
+      this.redraw();
+      if (this.onChange) this.onChange();
+    }
+    this.setMode('none');
+  }
+
   /** 图表点击：按当前模式处理画线/删除。返回是否变更了 lines。 */
   handleClick(param) {
     if (!param.point || param.time == null) return false;
@@ -191,6 +310,12 @@ window.Overlay = class Overlay {
     if (this.mode === 'del') {
       const hit = this._hitTest(param.point.x, param.point.y);
       if (hit >= 0) { this._pushUndo(); this.lines.splice(hit, 1); this.redraw(); return true; }
+      return false;
+    }
+    if (this.mode === 'select') {
+      const hit = this._hitTest(param.point.x, param.point.y);
+      this.selected = hit >= 0 ? hit : null;
+      this.redraw();
       return false;
     }
 
@@ -225,7 +350,11 @@ window.Overlay = class Overlay {
       return false;
     }
     this.pts = [];
-    if (ln) { this._pushUndo(); this.lines.push(ln); }
+    if (ln) {
+      ln.st = { ...this.style };        // 落线时固化当前样式（null 字段按类型兜底）
+      this._pushUndo();
+      this.lines.push(ln);
+    }
     this.setMode('none');
     return !!ln;
   }
@@ -279,12 +408,18 @@ window.Overlay = class Overlay {
           const yB = this.series.priceToCoordinate(f(this.bars.length - 1));
           if (yA != null && yB != null && _distToSeg(px, py, x0, yA, x1, yB) <= R) return i;
         }
-      } else if (ln.type === 'rect') {
+      } else if (ln.type === 'rect' || ln.type === 'drect') {
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
         if (!a || !b) continue;
         const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
         const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+        // 框选矩形：点框内或边框附近都算命中（便于选中改样式）
         if (px >= x0 - R && px <= x1 + R && py >= y0 - R && py <= y1 + R) return i;
+      } else if (ln.type === 'pen') {
+        const pts = (ln.pts || []).map((q) => this._xy(q.d, q.p)).filter(Boolean);
+        for (let k = 1; k < pts.length; k++) {
+          if (_distToSeg(px, py, pts[k - 1].x, pts[k - 1].y, pts[k].x, pts[k].y) <= R) return i;
+        }
       } else if (ln.type === 'text') {
         const a = this._xy(ln.d1, ln.p1);
         if (!a) continue;
@@ -369,48 +504,48 @@ window.Overlay = class Overlay {
       ctx.fillText(top ? '顶背驰' : '底背驰', a.x + 7, top ? a.y - 4 : a.y + 12);
     }
 
-    // ---- 用户画线 ----
-    ctx.lineWidth = 1.6;
-    for (const ln of this.lines) {
+    // ---- 用户画线（支持自定义颜色/粗细/虚实） ----
+    for (let li = 0; li < this.lines.length; li++) {
+      const ln = this.lines[li];
+      const st = this._st(ln);
+      const hl = li === this.selected;
+      ctx.lineWidth = st.width;
+      ctx.strokeStyle = st.color;
+      ctx.fillStyle = st.color;
+      ctx.setLineDash(st.dash ? [6, 4] : []);
+
       if (ln.type === 'hline') {
         const y = this.series.priceToCoordinate(ln.p1);
         if (y == null) continue;
-        ctx.strokeStyle = T.hline;
-        ctx.setLineDash([]);
         ctx.beginPath();
         ctx.moveTo(0, y); ctx.lineTo(w, y);
         ctx.stroke();
-        ctx.fillStyle = T.hline;
+        ctx.setLineDash([]);
         ctx.font = '10px sans-serif';
         ctx.fillText(String(Number(ln.p1).toFixed(2)), 4, y - 3);
       } else if (ln.type === 'fib') {
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
         if (!a || !b) continue;
-        ctx.strokeStyle = T.fib;
-        ctx.fillStyle = T.fib;
-        // 锚点连线（细实线）
         ctx.setLineDash([]);
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
         ctx.stroke();
-        // 档位水平线（虚线，自左锚点起直至右缘）+ 右缘标签
         ctx.font = '10px sans-serif';
         const x0 = Math.min(a.x, b.x);
         for (const { r, price } of this._fibLevels(ln)) {
           const y = this.series.priceToCoordinate(price);
           if (y == null) continue;
           ctx.setLineDash([4, 3]);
-          ctx.lineWidth = (r === '0.618' || r === '0.5') ? 1.6 : 1;
+          ctx.lineWidth = (r === '0.618' || r === '0.5') ? Math.max(1, st.width) : 1;
           ctx.beginPath();
           ctx.moveTo(x0, y); ctx.lineTo(w, y);
           ctx.stroke();
-          const label = `${r} ${price.toFixed(2)}`;
           ctx.setLineDash([]);
+          const label = `${r} ${price.toFixed(2)}`;
           const tw = ctx.measureText(label).width;
           ctx.fillText(label, w - tw - 4, y - 3);
         }
-        ctx.lineWidth = 1.6;
       } else if (ln.type === 'channel') {
         const L = this._chanLines(ln);
         if (!L) continue;
@@ -422,8 +557,7 @@ window.Overlay = class Overlay {
           this.series.priceToCoordinate(f(this.bars.length - 1)),
         ]);
         if (ys.some((seg) => seg.some((y) => y == null))) continue;
-        // 通道填充
-        ctx.fillStyle = T.channel;
+        ctx.fillStyle = st.color;
         ctx.save();
         ctx.globalAlpha = 0.07;
         ctx.beginPath();
@@ -432,28 +566,40 @@ window.Overlay = class Overlay {
         ctx.closePath();
         ctx.fill();
         ctx.restore();
-        // 两边界
-        ctx.strokeStyle = T.channel;
-        ctx.setLineDash([]);
+        ctx.strokeStyle = st.color;
         for (const [ya, yb] of ys) {
           ctx.beginPath();
           ctx.moveTo(x0, ya); ctx.lineTo(x1, yb);
           ctx.stroke();
         }
-      } else if (ln.type === 'rect') {
+      } else if (ln.type === 'rect' || ln.type === 'drect') {
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
         if (!a || !b) continue;
         const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
         const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
-        ctx.fillStyle = T.rect;
+        ctx.fillStyle = st.color;
         ctx.save();
-        ctx.globalAlpha = 0.10;
+        ctx.globalAlpha = ln.type === 'drect' ? 0.08 : 0.10;
         ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
         ctx.restore();
-        ctx.strokeStyle = T.rect;
-        ctx.setLineDash([5, 3]);
+        ctx.strokeStyle = st.color;
+        ctx.setLineDash(st.dash ? [5, 3] : []);
         ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
         ctx.setLineDash([]);
+      } else if (ln.type === 'pen') {
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        let started = false;
+        for (const q of ln.pts || []) {
+          const a = this._xy(q.d, q.p);
+          if (!a) continue;
+          if (!started) { ctx.moveTo(a.x, a.y); started = true; }
+          else ctx.lineTo(a.x, a.y);
+        }
+        if (started) ctx.stroke();
+        ctx.lineJoin = 'miter';
+        ctx.lineCap = 'butt';
       } else if (ln.type === 'text') {
         const a = this._xy(ln.d1, ln.p1);
         if (!a) continue;
@@ -471,28 +617,88 @@ window.Overlay = class Overlay {
           ctx.fillRect(a.x - 3, a.y - 14, tw + 8, 18);
         }
         ctx.restore();
-        ctx.strokeStyle = T.note;
+        ctx.strokeStyle = st.color;
         ctx.setLineDash([]);
         ctx.lineWidth = 1;
         ctx.strokeRect(a.x - 3, a.y - 14, tw + 8, 18);
-        ctx.fillStyle = T.note;
+        ctx.fillStyle = st.color;
         ctx.fillText(ln.txt, a.x + 1, a.y - 1);
-        ctx.lineWidth = 1.6;
       } else {                    // trend
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
         if (!a || !b) continue;
-        ctx.strokeStyle = T.trend;
-        ctx.setLineDash([]);
         ctx.beginPath();
         ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
         ctx.stroke();
+        ctx.setLineDash([]);
         for (const pt of [a, b]) {
-          ctx.fillStyle = T.trend;
+          ctx.fillStyle = st.color;
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
           ctx.fill();
         }
       }
+
+      // 选中态：锚点手柄（选择模式下点中的线）
+      if (hl) {
+        const anchors = [];
+        if (ln.type === 'hline') {
+          const y = this.series.priceToCoordinate(ln.p1);
+          if (y != null) anchors.push({ x: 20, y });
+        } else if (ln.type === 'pen') {
+          for (const q of [ln.pts && ln.pts[0], ln.pts && ln.pts[ln.pts.length - 1]]) {
+            const a = q && this._xy(q.d, q.p);
+            if (a) anchors.push(a);
+          }
+        } else if (ln.type === 'channel') {
+          for (const [d, p] of [[ln.d1, ln.p1], [ln.d2, ln.p2], [ln.d3, ln.p3]]) {
+            const a = this._xy(d, p);
+            if (a) anchors.push(a);
+          }
+        } else {
+          const a = this._xy(ln.d1, ln.p1);
+          if (a) anchors.push(a);
+          if (ln.type !== 'text') {
+            const b = this._xy(ln.d2, ln.p2);
+            if (b) anchors.push(b);
+          }
+        }
+        ctx.setLineDash([]);
+        for (const a of anchors) {
+          ctx.beginPath();
+          ctx.arc(a.x, a.y, 4.2, 0, Math.PI * 2);
+          ctx.fillStyle = T.accent;
+          ctx.fill();
+          ctx.lineWidth = 1.4;
+          ctx.strokeStyle = T.panel;
+          ctx.stroke();
+        }
+      }
+    }
+
+    // ---- 拖拽预览（框选矩形 / 涂鸦笔迹） ----
+    if (this._drag) {
+      const D = this._drag;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = T.accent;
+      ctx.lineWidth = 1.4;
+      if (D.type === 'drect') {
+        const a = this._xy(D.start.d, D.start.p), b = this._xy(D.cur.d, D.cur.p);
+        if (a && b) {
+          ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y),
+            Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+        }
+      } else {
+        ctx.beginPath();
+        let started = false;
+        for (const q of D.pts) {
+          const a = this._xy(q.d, q.p);
+          if (!a) continue;
+          if (!started) { ctx.moveTo(a.x, a.y); started = true; }
+          else ctx.lineTo(a.x, a.y);
+        }
+        if (started) ctx.stroke();
+      }
+      ctx.setLineDash([]);
     }
 
     // ---- 已落点提示（多点工具） ----

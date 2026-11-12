@@ -517,6 +517,39 @@ function renderTrainChart(refit = false) {
   updateTrainLegend(null);
 }
 
+/** 画线样式浮层（训练页）：颜色/粗细/虚实；有选中线作用于选中，否则设为新线默认 */
+function buildTrainDrawStyle() {
+  const pop = $('train-draw-style-pop');
+  const btn = $('train-draw-style');
+  if (!pop || !btn) return;
+  const COLORS = ['#f0b90b', '#e0483e', '#4a90e2', '#1fa06b', '#c77dff', '#e6ebf4'];
+  pop.innerHTML =
+    `<div class="ds-row"><span class="ds-lab">颜色</span><span class="ds-colors">` +
+    COLORS.map((c) => `<button class="ds-c" data-color="${c}" style="background:${c}" title="${c}"></button>`).join('') +
+    `</span></div>` +
+    `<div class="ds-row"><span class="ds-lab">粗细</span>` +
+    `<button class="ds-b" data-width="1">细</button>` +
+    `<button class="ds-b" data-width="1.6">中</button>` +
+    `<button class="ds-b" data-width="2.6">粗</button></div>` +
+    `<div class="ds-row"><span class="ds-lab">线型</span>` +
+    `<button class="ds-b" data-dash="0">实线</button>` +
+    `<button class="ds-b" data-dash="1">虚线</button></div>` +
+    `<div class="ds-row"><button class="ds-del" data-del="1">删除选中线</button></div>`;
+  pop.onclick = (e) => {
+    const t = e.target.closest('button');
+    if (!t || !overlay) return;
+    e.stopPropagation();
+    if (t.dataset.color) overlay.setStyle({ color: t.dataset.color });
+    else if (t.dataset.width) overlay.setStyle({ width: Number(t.dataset.width) });
+    else if (t.dataset.dash) overlay.setStyle({ dash: t.dataset.dash === '1' });
+    else if (t.dataset.del) overlay.deleteSelected();
+  };
+  btn.onclick = (e) => { e.stopPropagation(); pop.classList.toggle('hidden'); };
+  document.addEventListener('click', (e) => {
+    if (!pop.classList.contains('hidden') && !pop.contains(e.target) && e.target !== btn) pop.classList.add('hidden');
+  });
+}
+
 /** MA 周期勾选浮层（训练页） */
 function buildTrainMaMenu() {
   const menu = $('train-ma-menu');
@@ -1276,6 +1309,7 @@ function bind() {
     b.onclick = () => { tToggles[b.dataset.tt] = !tToggles[b.dataset.tt]; applyTrainToggles(); };
   });
   buildTrainMaMenu();
+  buildTrainDrawStyle();
   document.querySelectorAll('[data-tdraw]').forEach((b) => {
     b.onclick = () => {
       if (!overlay) return;
