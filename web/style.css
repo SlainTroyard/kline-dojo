@@ -364,6 +364,36 @@ select.tg-btn option { background: var(--panel); color: var(--text); }
 #screen-mkt .view-list { max-height: none; min-height: 0; }
 #screen-mkt .view-toolbar { padding-top: 2px; }
 .mkt-title-inline { align-self: center; margin: 0 6px 0 2px; white-space: nowrap; }
+/* 行情页右侧工具侧边栏：周期/复权/联动/指标开关竖排，把纵向空间全留给图表 */
+.mkt-body { flex: 1; min-height: 0; display: flex; gap: 8px; }
+.mkt-chart-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.mkt-tool-side {
+  width: 96px; flex: none; display: flex; flex-direction: column; gap: 6px;
+  overflow-y: auto; overflow-x: visible; padding-bottom: 2px;
+}
+.ts-group {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 3px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 3px;
+}
+.ts-group .tg-btn { padding: 5px 2px; font-size: 11.5px; text-align: center; width: 100%; }
+.ts-group .span2 { grid-column: 1 / -1; }
+.ts-group .ma-wrap { display: grid; grid-template-columns: 1fr; position: relative; }
+.ts-group .ma-wrap .ma-menu { right: 0; left: auto; }
+/* MA 周期选择浮层 */
+.ma-wrap { position: relative; display: inline-flex; }
+.ma-menu {
+  position: absolute; top: 100%; left: 0; z-index: 40; margin-top: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px; display: flex; flex-direction: column; gap: 1px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.4); min-width: 92px;
+}
+.ma-menu label {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text);
+  padding: 3px 4px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+}
+.ma-menu label:hover { background: var(--panel2); }
+.ma-menu label i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.ma-menu input { accent-color: var(--accent); margin: 0; }
 /* 筹码峰：主面板右侧叠层（价格轴左侧 62px 处，宽 66px，不拦鼠标） */
 .chip-canvas {
   position: absolute; top: 0; right: 62px; width: 66px; height: 100%;

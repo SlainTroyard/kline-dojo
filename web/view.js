@@ -6,10 +6,13 @@ window.createBoard = function createBoard(cfg) {
   const $ = (suf) => document.getElementById(P + '-' + suf);
   const lsKey = (k) => 'bz_' + P + '_' + k;
   const UP = '#e0483e', DOWN = '#1fa06b';
-  const MA_DEFS = [
+  const MA_DEFS = [                       // 可选均线（勾选开关，默认 5/10/20/60）
     { p: 5, color: '#f0b90b' }, { p: 10, color: '#4a90e2' },
-    { p: 20, color: '#c77dff' }, { p: 60, color: '#ff8c42' },
+    { p: 13, color: '#22c1c3' }, { p: 20, color: '#c77dff' },
+    { p: 21, color: '#ff6b9d' }, { p: 40, color: '#9ccc65' },
+    { p: 60, color: '#ff8c42' }, { p: 120, color: '#8892a6' },
   ];
+  const MA_DEFAULT = [5, 10, 20, 60];
 
   let inited = false;
   let chart = null, candle = null;
@@ -29,7 +32,12 @@ window.createBoard = function createBoard(cfg) {
     catch { return defaults; }
   }
   const toggles = loadToggles(lsKey('toggles'),
-    { ma: true, boll: false, macd: true, kdj: false, vol: true, chip: false, chan: false, duan: false, bei: false });
+    { maSel: null, boll: false, macd: true, kdj: false, vol: true, chip: false, chan: false, duan: false, bei: false });
+  if (!Array.isArray(toggles.maSel)) {          // 旧版只有 ma:true/false
+    toggles.maSel = toggles.ma === false ? [] : MA_DEFAULT.slice();
+  }
+  delete toggles.ma;
+  const maOn = () => new Set(toggles.maSel);
 
   /* ---------------- 小地图：全历史缩略条（点击/拖动跳转可视区间） ---------------- */
   class Minimap {
@@ -257,8 +265,9 @@ window.createBoard = function createBoard(cfg) {
     const tOf = (i) => (bars[i].t != null ? bars[i].t : bars[i].d);
     const line = (arr) => arr.map((v, i) => (v == null ? null : { time: tOf(i), value: v })).filter(Boolean);
 
+    const on = maOn();
     for (const m of MA_DEFS) {
-      maS[m.p].setData(toggles.ma ? line(window.Ind.sma(closes, m.p)) : []);
+      maS[m.p].setData(on.has(m.p) ? line(window.Ind.sma(closes, m.p)) : []);
     }
     if (toggles.boll) {
       const bo = window.Ind.boll(closes);
@@ -333,7 +342,14 @@ window.createBoard = function createBoard(cfg) {
   }
 
   function applyToggles() {
-    for (const m of MA_DEFS) maS[m.p].applyOptions({ visible: !!toggles.ma });
+    const on = maOn();
+    for (const m of MA_DEFS) maS[m.p].applyOptions({ visible: on.has(m.p) });
+    const maBtn = $('ma-btn');
+    if (maBtn) maBtn.classList.toggle('on', on.size > 0);
+    const menu = $('ma-menu');
+    if (menu) {
+      menu.querySelectorAll('input[data-ma]').forEach((cb) => { cb.checked = on.has(Number(cb.dataset.ma)); });
+    }
     // 各指标独立小面板：显隐即面板显隐，时间轴重新挂到最底可见面板
     const visPane = (id, on) => { const el = $(id); if (el) el.classList.toggle('hidden', !on); };
     visPane('pane-boll', toggles.boll);
@@ -351,6 +367,42 @@ window.createBoard = function createBoard(cfg) {
     if (overlay) {
       overlay.setChan(window.Ind.chanView(curBars(), toggles));
     }
+  }
+
+  /** MA 周期勾选浮层：勾选即时生效（本板持久化） */
+  function buildMaMenu() {
+    const menu = $('ma-menu');
+    const btn = $('ma-btn');
+    if (!menu || !btn) return;
+    menu.textContent = '';
+    for (const m of MA_DEFS) {
+      const lab = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.ma = String(m.p);
+      cb.checked = toggles.maSel.includes(m.p);
+      cb.onchange = () => {
+        toggles.maSel = cb.checked
+          ? [...new Set([...toggles.maSel, m.p])].sort((a, b) => a - b)
+          : toggles.maSel.filter((p) => p !== m.p);
+        applyToggles();
+        updateLegend(null);
+      };
+      const dot = document.createElement('i');
+      dot.style.background = m.color;
+      lab.append(cb, dot, document.createTextNode(`MA${m.p}`));
+      menu.appendChild(lab);
+    }
+    btn.onclick = (e) => { e.stopPropagation(); menu.classList.toggle('hidden'); };
+    // 点浮层外或按 Esc 收起
+    document.addEventListener('click', (e) => {
+      if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== btn) {
+        menu.classList.add('hidden');
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') menu.classList.add('hidden');
+    });
   }
 
   /* ---------------- 图例 ---------------- */
@@ -375,8 +427,9 @@ window.createBoard = function createBoard(cfg) {
       `<b style="color:${chg >= 0 ? T.up : T.down}">${curName} ${b.d}</b> ` +
       `开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
       `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
-    if (toggles.ma) {
-      html += sec(MA_DEFS.map((m) => {
+    if (toggles.maSel.length) {
+      const on = maOn();
+      html += sec(MA_DEFS.filter((m) => on.has(m.p)).map((m) => {
         const v = window.Ind.sma(closes, m.p)[idx];
         return v == null ? '' : `MA${m.p} <b>${v.toFixed(1)}</b>`;
       }).filter(Boolean).join(' '), T.dim);
@@ -805,6 +858,7 @@ window.createBoard = function createBoard(cfg) {
     root.querySelectorAll('[data-tg]').forEach((b) => {
       b.onclick = () => { toggles[b.dataset.tg] = !toggles[b.dataset.tg]; applyToggles(); updateLegend(null); };
     });
+    buildMaMenu();
     root.querySelectorAll('[data-draw]').forEach((b) => {
       b.onclick = () => {
         const m = b.dataset.draw;

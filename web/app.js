@@ -11,12 +11,14 @@ const fmtMoney = (x) => Number(x).toLocaleString('zh-CN', { maximumFractionDigit
 const fmtPct = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
 const UP = '#e0483e';    // A股红涨（四主题下均可读，保持恒定）
 const DOWN = '#1fa06b';  // 绿跌
-const MA_DEFS = [
-  { p: 5, color: '#f0b90b' },
-  { p: 10, color: '#4a90e2' },
-  { p: 20, color: '#c77dff' },
-  { p: 60, color: '#ff8c42' },
+const MA_DEFS = [                       // 可选均线（勾选开关，默认 5/10/20/60）
+  { p: 5, color: '#f0b90b' }, { p: 10, color: '#4a90e2' },
+  { p: 13, color: '#22c1c3' }, { p: 20, color: '#c77dff' },
+  { p: 21, color: '#ff6b9d' }, { p: 40, color: '#9ccc65' },
+  { p: 60, color: '#ff8c42' }, { p: 120, color: '#8892a6' },
 ];
+const MA_DEFAULT = [5, 10, 20, 60];
+let maSel = null;                       // 勾选的均线周期（懒加载，见 loadToggles 后）
 
 let toastTimer = null;
 function toast(msg, ok = false) {
@@ -68,7 +70,13 @@ function loadToggles(key, defaults) {      // localStorage 坏值不炸全局（
   catch { return defaults; }
 }
 const tToggles = loadToggles('bz_train_toggles',
-  { ma: true, boll: false, macd: true, kdj: false, vol: true, chip: false, chan: false, duan: false, bei: false });
+  { boll: false, macd: true, kdj: false, vol: true, chip: false, chan: false, duan: false, bei: false });
+if (!Array.isArray(tToggles.maSel)) {          // 旧版只有 ma:true/false
+  tToggles.maSel = tToggles.ma === false ? [] : MA_DEFAULT.slice();
+}
+delete tToggles.ma;
+maSel = tToggles.maSel;
+const maOn = () => new Set(maSel);
 
 let selectedCodes = new Map();  // 本局自选标的 code → name
 let watchlist = [];             // 我的自选 [{code,name}]（localStorage）
@@ -383,8 +391,9 @@ function updateTrainLegend(param) {
   let html =
     `开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
     `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
-  if (tToggles.ma) {
-    html += sec(MA_DEFS.map((m) => {
+  if (maSel.length) {
+    const on = maOn();
+    html += sec(MA_DEFS.filter((m) => on.has(m.p)).map((m) => {
       const v = window.Ind.sma(closes, m.p)[k];
       return v == null ? '' : `MA${m.p} <b>${v.toFixed(1)}</b>`;
     }).filter(Boolean).join(' '), T.dim);
@@ -434,8 +443,9 @@ function refillTrainIndicators(bars) {
   const closes = bars.map((b) => b.c);
   const line = (arr) => arr.map((v, i) => (v == null ? null : { time: tsOf(bars[i].d), value: v })).filter(Boolean);
 
+  const on = maOn();
   for (const m of MA_DEFS) {
-    maS[m.p].setData(tToggles.ma ? line(window.Ind.sma(closes, m.p)) : []);
+    maS[m.p].setData(on.has(m.p) ? line(window.Ind.sma(closes, m.p)) : []);
   }
   if (tToggles.boll) {
     const bo = window.Ind.boll(closes);
@@ -507,8 +517,48 @@ function renderTrainChart(refit = false) {
   updateTrainLegend(null);
 }
 
+/** MA 周期勾选浮层（训练页） */
+function buildTrainMaMenu() {
+  const menu = $('train-ma-menu');
+  const btn = $('train-ma-btn');
+  if (!menu || !btn) return;
+  menu.textContent = '';
+  for (const m of MA_DEFS) {
+    const lab = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.ma = String(m.p);
+    cb.checked = maSel.includes(m.p);
+    cb.onchange = () => {
+      maSel = cb.checked
+        ? [...new Set([...maSel, m.p])].sort((a, b) => a - b)
+        : maSel.filter((p) => p !== m.p);
+      tToggles.maSel = maSel;
+      applyTrainToggles();
+    };
+    const dot = document.createElement('i');
+    dot.style.background = m.color;
+    lab.append(cb, dot, document.createTextNode(`MA${m.p}`));
+    menu.appendChild(lab);
+  }
+  btn.onclick = (e) => { e.stopPropagation(); menu.classList.toggle('hidden'); };
+  document.addEventListener('click', (e) => {
+    if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== btn) {
+      menu.classList.add('hidden');
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') menu.classList.add('hidden');
+  });
+}
+
 function applyTrainToggles(skipRender = false) {
-  for (const m of MA_DEFS) maS[m.p].applyOptions({ visible: !!tToggles.ma });
+  const on = maOn();
+  for (const m of MA_DEFS) maS[m.p].applyOptions({ visible: on.has(m.p) });
+  const maBtn = $('train-ma-btn');
+  if (maBtn) maBtn.classList.toggle('on', on.size > 0);
+  const menu = $('train-ma-menu');
+  if (menu) menu.querySelectorAll('input[data-ma]').forEach((cb) => { cb.checked = on.has(Number(cb.dataset.ma)); });
   // 各指标独立小面板：显隐即面板显隐
   const visPane = (id, on) => { const el = $(id); if (el) el.classList.toggle('hidden', !on); };
   visPane('train-pane-boll', tToggles.boll);
@@ -1225,6 +1275,7 @@ function bind() {
   document.querySelectorAll('[data-tt]').forEach((b) => {
     b.onclick = () => { tToggles[b.dataset.tt] = !tToggles[b.dataset.tt]; applyTrainToggles(); };
   });
+  buildTrainMaMenu();
   document.querySelectorAll('[data-tdraw]').forEach((b) => {
     b.onclick = () => {
       if (!overlay) return;
