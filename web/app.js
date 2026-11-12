@@ -929,11 +929,29 @@ function renderRevealChart() {
 }
 
 /* ---------------- 开始页 ---------------- */
+/** 「历史全部」勾选时禁用根数输入；取消勾选恢复一个可用值 */
+function syncHistoryAll() {
+  const all = $('p-history-all').checked;
+  const inp = $('p-history');
+  inp.disabled = all;
+  if (!all && (!inp.value || Number(inp.value) === 0)) inp.value = 120;
+}
+
+/** 定窗时训练期由日期区间决定，训练推进(根)不生效 */
+function syncFixedWindow() {
+  const fixed = !!$('p-date-from').value;
+  const fwd = $('p-forward');
+  fwd.disabled = fixed;
+  fwd.title = fixed
+    ? '定窗时训练期由起止日期决定，此参数不生效'
+    : '仅随机抽窗使用；指定训练起始日后由日期区间决定';
+}
+
 function collectParams() {
   const fill = (document.querySelector('input[name="p-fill"]:checked') || {}).value || 'close';
   return {
     capital: Number($('p-capital').value) || 100000,
-    history: (() => { const raw = $('p-history').value; const v = Number(raw); return raw === '' || !Number.isFinite(v) ? 120 : Math.max(0, Math.floor(v)); })(),   // 0=全部（训练前所有 bars）
+    history: $('p-history-all').checked ? 0 : (() => { const raw = $('p-history').value; const v = Number(raw); return raw === '' || !Number.isFinite(v) ? 120 : Math.max(0, Math.floor(v)); })(),   // 0=全部（训练前所有 bars）
     forward: Number($('p-forward').value) || 120,
     year_from: Number($('p-year-from').value) || 2016,
     year_to: Number($('p-year-to').value) || 2025,
@@ -1271,6 +1289,8 @@ function bind() {
   ['p-comm', 'p-comm-min', 'p-stamp'].forEach((id) => {
     $(id).oninput = updateRulesTip;
   });
+  $('p-history-all').onchange = syncHistoryAll;
+  $('p-date-from').oninput = syncFixedWindow;
 
   $('btn-start').onclick = async () => {
     lastCategory = curCategory();
@@ -1460,7 +1480,8 @@ function bind() {
     const saved = JSON.parse(localStorage.getItem('bz_params') || 'null');
     if (saved) {
       $('p-capital').value = saved.capital ?? 100000;
-      $('p-history').value = saved.history ?? 120;
+      $('p-history-all').checked = Number(saved.history ?? 120) === 0;
+      $('p-history').value = Number(saved.history ?? 120) === 0 ? 120 : (saved.history ?? 120);
       $('p-forward').value = saved.forward ?? 120;
       $('p-year-from').value = saved.year_from ?? 2016;
       $('p-year-to').value = saved.year_to ?? 2025;
@@ -1468,6 +1489,8 @@ function bind() {
       $('p-exclude-st').checked = saved.exclude_st !== false;
       if (saved.date_from) $('p-date-from').value = saved.date_from;
       if (saved.date_to) $('p-date-to').value = saved.date_to;
+      syncHistoryAll();
+      syncFixedWindow();
       $('p-comm').value = saved.commission_rate != null ? Math.round(saved.commission_rate * 10000 * 10) / 10 : 1;
       $('p-comm-min').value = saved.commission_min ?? 5;
       $('p-stamp').value = saved.stamp_rate != null ? Math.round(saved.stamp_rate * 10000 * 10) / 10 : 5;

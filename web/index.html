@@ -78,18 +78,19 @@
   <div class="params">
     <label>初始资金(元)<input id="p-capital" type="number" step="10000" min="10000" value="100000"></label>
     <label>可见历史(根)<input id="p-history" type="number" step="10" min="0" max="250" value="120" title="0 = 训练前全部历史（从上市/指数起点起）"></label>
-    <label>训练推进(根)<input id="p-forward" type="number" step="10" min="40" max="250" value="120"></label>
+    <label class="chk" title="勾选后：训练起点之前的全部 K 线都可见"><input id="p-history-all" type="checkbox"> 历史全部</label>
+    <label>训练推进(根)<input id="p-forward" type="number" step="10" min="40" max="250" value="120" title="仅随机抽窗使用；指定训练起始日后由日期区间决定"></label>
     <label>起始年份<input id="p-year-from" type="number" min="1993" max="2026" value="2016"></label>
     <label>结束年份<input id="p-year-to" type="number" min="1993" max="2026" value="2025"></label>
     <label>上市满(年)<input id="p-list-years" type="number" step="0.5" min="0" max="20" value="1"></label>
     <label class="chk"><input id="p-exclude-st" type="checkbox" checked> 剔除 ST / 退市整理</label>
   </div>
-  <p class="mini-tip params-tip">起始/结束年份用于随机抽窗；若指定了下面的起止日期则改用定窗。</p>
+  <p class="mini-tip params-tip">起始/结束年份与训练推进(根)只用于随机抽窗；填了下面的训练起始日则改用定窗，训练期完全由日期区间决定。</p>
 
   <div class="params dates">
     <label>训练起始日<input id="p-date-from" type="date"></label>
     <label>训练结束日<input id="p-date-to" type="date"></label>
-    <span class="mini-tip-inline">留空 = 随机抽窗；指定后：该区间为<b>训练期</b>，前置历史自动向前取，结束日留空则到数据末尾</span>
+      <span class="mini-tip-inline">训练起始日留空 = 随机抽窗；填了起始日则改用定窗：该区间为<b>训练期</b>，训练推进(根)不再生效，结束日留空则到数据末尾；前置历史仍由「可见历史」决定</span>
   </div>
 
   <details class="adv">

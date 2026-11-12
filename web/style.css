@@ -144,6 +144,7 @@ b { font-weight: 600; }
 }
 .params input[type="date"] { width: 150px; }
 .params input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.params input:disabled { opacity: .45; cursor: not-allowed; }
 .params .radio { display: inline-flex; gap: 5px; cursor: pointer; color: var(--text); }
 .params .radio input { accent-color: var(--accent); }
 .params-tip { margin: 8px 4px 0; }
