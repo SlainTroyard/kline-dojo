@@ -256,6 +256,51 @@ def market_update_status() -> dict:
     return {"running": running, "log_tail": tail}
 
 
+# ----------------------------------------------------------- market kline ----
+
+def market_kline(code: str, freq: str, adj: str) -> dict:
+    """行情页 K 线。注意 bz_data.daily/mins_bars 返回的是 lru_cache 共享对象，
+    前复权必须先在副本上计算——原地改列会让缓存里的原始价随请求次数反复缩水。"""
+    code = bz_data.normalize_code(code) or ""
+    if not code:
+        raise ValueError("未知代码")
+    inst = bz_data.instruments()
+    nrow = inst[inst["code"] == code]
+    name = str(nrow.iloc[0]["name"]) if len(nrow) else code
+    if freq in ("5min", "30min", "1min", "15min", "60min"):
+        df = bz_data.mins_bars(code, freq)
+        if freq not in bz_data.mins_freqs(code) or not len(df):
+            raise ValueError(f"{code} 无 {freq} 分钟数据")
+        df = df.tail(4000).copy()                # 分钟限最近 4000 根（全史太重）
+        fac = df["adj_factor"].to_numpy()
+        base = fac[-1]
+        if adj == "qfq" and base and base == base:
+            for c in ("open", "high", "low", "close"):
+                df[c] = df[c] * fac / base       # 与训练同一前复权口径：锚定末根
+        bars = [
+            [str(t.trade_time), float(t.open), float(t.high), float(t.low),
+             float(t.close), float(t.volume)]
+            for t in df.itertuples()]
+        asof = str(df["trade_time"].iloc[-1])
+    else:
+        df = bz_data.daily(bz_data.kind_of(code), code)
+        if not len(df):
+            raise ValueError(f"{code} 无日线数据")
+        df = df.copy()                           # 缓存只读，复权在副本上做
+        fac = df["adj_factor"].to_numpy()
+        base = fac[-1]
+        if adj == "qfq" and base and base == base:
+            for c in ("open", "high", "low", "close"):
+                df[c] = df[c] * fac / base
+        bars = [
+            [str(t.date.date()), float(t.open), float(t.high), float(t.low),
+             float(t.close), float(t.volume)]
+            for t in df.itertuples()]
+        asof = str(df["date"].iloc[-1].date())
+    return {"code": code, "name": name, "freq": freq,
+            "adj": adj, "asof": asof, "bars": bars}
+
+
 # -------------------------------------------------------------- handler ----
 
 class QuietHTTPServer(ThreadingHTTPServer):
@@ -312,43 +357,10 @@ class Handler(BaseHTTPRequestHandler):
             code = (q.get("code") or [""])[0].split(".")[0]
             freq = (q.get("freq") or ["D"])[0]
             adj = (q.get("adj") or ["qfq"])[0]
-            code = bz_data.normalize_code(code) or ""
-            if not code:
-                return self._json({"error": "未知代码"}, 404)
-            inst = bz_data.instruments()
-            nrow = inst[inst["code"] == code]
-            name = str(nrow.iloc[0]["name"]) if len(nrow) else code
-            if freq in ("5min", "30min", "1min", "15min", "60min"):
-                df = bz_data.mins_bars(code, freq)
-                if freq not in bz_data.mins_freqs(code) or not len(df):
-                    return self._json({"error": f"{code} 无 {freq} 分钟数据"}, 404)
-                df = df.tail(4000)                       # 分钟限最近 4000 根（全史太重）
-                fac = df["adj_factor"].to_numpy()
-                base = fac[-1]
-                if adj == "qfq" and base and base == base:
-                    for c in ("open", "high", "low", "close"):
-                        df[c] = df[c] * fac / base       # 与训练同一前复权口径：锚定末根
-                bars = [
-                    [str(t.trade_time), float(t.open), float(t.high), float(t.low),
-                     float(t.close), float(t.volume)]
-                    for t in df.itertuples()]
-                asof = str(df["trade_time"].iloc[-1])
-            else:
-                df = bz_data.daily(bz_data.kind_of(code), code)
-                if not len(df):
-                    return self._json({"error": f"{code} 无日线数据"}, 404)
-                fac = df["adj_factor"].to_numpy()
-                base = fac[-1]
-                if adj == "qfq" and base and base == base:
-                    for c in ("open", "high", "low", "close"):
-                        df[c] = df[c] * fac / base
-                bars = [
-                    [str(t.date.date()), float(t.open), float(t.high), float(t.low),
-                     float(t.close), float(t.volume)]
-                    for t in df.itertuples()]
-                asof = str(df["date"].iloc[-1].date())
-            return self._json({"code": code, "name": name, "freq": freq,
-                               "adj": adj, "asof": asof, "bars": bars})
+            try:
+                return self._json(market_kline(code, freq, adj))
+            except ValueError as ex:
+                return self._json({"error": str(ex)}, 404)
         if path == "/api/replay":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
@@ -611,6 +623,27 @@ def selftest(n_each: int = 12) -> int:
         # 匿名性（字符串值包含判断，数值子串巧合不算）
         check(not leaks(pub, sec["code"], sec["start_date"]), f"{tag}: payload 泄露身份")
         print(f"selftest {name}: done")
+
+    # ---- 回归：行情前复权不得污染 bz_data 缓存（曾致早期价格随请求次数缩水）----
+    pool = [c for c in ("600118", "600519") if len(bz_data.daily("stocks", c))]
+    if not pool:
+        pool = [c for c in bz_data.codes("stocks")[:20] if len(bz_data.daily("stocks", c))]
+    if pool:
+        code = pool[0]
+        raw = bz_data.daily("stocks", code)
+        c0 = float(raw["close"].iloc[0])
+        f = raw["adj_factor"].to_numpy()
+        expect = c0 * float(f[0]) / float(f[-1])
+        r1 = market_kline(code, "D", "qfq")
+        r2 = market_kline(code, "D", "qfq")
+        check(r1["bars"] == r2["bars"], "kline: 同一 qfq 请求两次结果不一致")
+        check(abs(r1["bars"][0][4] - expect) < 1e-6,
+              f"kline: 首根 qfq {r1['bars'][0][4]} != 理论值 {expect}")
+        check(float(bz_data.daily("stocks", code)["close"].iloc[0]) == c0,
+              "kline: qfq 请求改写了缓存原始价")
+        r3 = market_kline(code, "D", "none")
+        check(abs(r3["bars"][0][4] - c0) < 1e-6, "kline: 不复权首根被 qfq 污染")
+        print("selftest kline-qfq-cache: done")
 
     print(f"selftest {'PASS' if fails == 0 else f'{fails} FAILURES'}")
     return fails
