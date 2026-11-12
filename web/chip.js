@@ -192,16 +192,21 @@ window.ChipProfile = class ChipProfile {
     }
     ctx.globalAlpha = 1;
 
-    // 峰顶价格标签
+    // 峰顶价格标签：加一块面板色底，避免白蓝主题蓝字压蓝柱看不清
     if (pocK >= 0) {
       const y = Y(lo + (pocK + 0.5) * step);
       if (y != null && y > 14 && y < h - 6) {
         const txt = (lo + (pocK + 0.5) * step).toFixed(2);
         ctx.font = '10px sans-serif';
         const tw = ctx.measureText(txt).width;
+        const ty = Math.max(10, Math.min(y - 9, h - padB - 12));
+        ctx.globalAlpha = 0.86;
+        ctx.fillStyle = T.panel;
+        ctx.fillRect(w - padR - tw - 4, ty - 9, tw + 4, 15);
+        ctx.globalAlpha = 1;
         ctx.fillStyle = T.accent;
         ctx.textAlign = 'right';
-        ctx.fillText(txt, w - padR, Math.max(10, Math.min(y - 9, h - padB - 12)));
+        ctx.fillText(txt, w - padR, ty);
         ctx.textAlign = 'left';
       }
     }

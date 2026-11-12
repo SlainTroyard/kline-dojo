@@ -283,7 +283,7 @@ function buildTrainChart() {
     grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
     rightPriceScale: {
       borderColor: T.line, minimumWidth: TRAIN_AXIS_W, maximumWidth: TRAIN_AXIS_W,
-      scaleMargins: { top: 0.05, bottom: 0.05 },
+      scaleMargins: { top: 0.08, bottom: 0.05 },   // 顶部留给可换行的图例
     },
     timeScale: { visible: false, borderColor: T.line, rightOffset: 8 },
     crosshair: { mode: 0 },
@@ -296,7 +296,8 @@ function buildTrainChart() {
   maS = {};
   for (const m of MA_DEFS) {
     maS[m.p] = chart.addLineSeries({
-      color: m.color, lineWidth: 1, title: `MA${m.p}`,
+      color: window.BzTheme.maColor(m.p, m.color), lineWidth: 1,
+      // 不设 title：避免价格轴额外画均线标签（名称已在顶部图例）
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
     });
   }
@@ -385,18 +386,21 @@ function updateTrainLegend(param) {
   const chg = k > 0 ? (b.c / bars[k - 1].c - 1) * 100 : 0;
   const closes = bars.map((x) => x.c);
   const fmtVol = (v) => v >= 1e8 ? (v / 1e8).toFixed(2) + '亿' : v >= 1e4 ? (v / 1e4).toFixed(2) + '万' : String(Math.round(v));
-  const sec = (txt, color) => txt ? `<span style="color:${color};margin-left:12px">${txt}</span>` : '';
+  const sec = (txt, color) => txt ? `<span class="lg" style="color:${color}">${txt}</span>` : '';
   const xv = {};                       // 小面板十字光标定位值
   xv.vol = b.v;
   let html =
-    `开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
-    `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
+    `<span class="lg">开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
+    `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span></span>`;
   if (maSel.length) {
     const on = maOn();
-    html += sec(MA_DEFS.filter((m) => on.has(m.p)).map((m) => {
+    const maParts = MA_DEFS.filter((m) => on.has(m.p)).map((m) => {
       const v = window.Ind.sma(closes, m.p)[k];
-      return v == null ? '' : `MA${m.p} <b>${v.toFixed(1)}</b>`;
-    }).filter(Boolean).join(' '), T.dim);
+      if (v == null) return '';
+      const col = window.BzTheme.maColor(m.p, m.color);
+      return `<span style="color:${col}">MA${m.p}</span> <b>${v.toFixed(1)}</b>`;
+    }).filter(Boolean);
+    if (maParts.length) html += `<span class="lg" style="color:${T.dim}">${maParts.join(' ')}</span>`;
   }
   if (tToggles.vol) html += sec(`VOL <b>${fmtVol(b.v)}</b>`, b.c >= b.o ? T.up : T.down);
   if (tToggles.macd) {
@@ -570,7 +574,8 @@ function buildTrainMaMenu() {
       applyTrainToggles();
     };
     const dot = document.createElement('i');
-    dot.style.background = m.color;
+    dot.dataset.ma = String(m.p);
+    dot.style.background = window.BzTheme.maColor(m.p, m.color);
     lab.append(cb, dot, document.createTextNode(`MA${m.p}`));
     menu.appendChild(lab);
   }
@@ -582,6 +587,16 @@ function buildTrainMaMenu() {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') menu.classList.add('hidden');
+  });
+}
+
+/** 主题切换后同步训练页 MA 菜单色点 */
+function syncTrainMaDots() {
+  const menu = $('train-ma-menu');
+  if (!menu) return;
+  menu.querySelectorAll('i[data-ma]').forEach((dot) => {
+    const m = MA_DEFS.find((x) => String(x.p) === dot.dataset.ma);
+    if (m) dot.style.background = window.BzTheme.maColor(m.p, m.color);
   });
 }
 
@@ -933,8 +948,17 @@ function renderRevealChart() {
 function syncHistoryAll() {
   const all = $('p-history-all').checked;
   const inp = $('p-history');
+  if (all) {
+    if (inp.value) inp.dataset.prev = inp.value;
+    inp.value = '';
+  } else {
+    const prev = inp.dataset.prev;
+    inp.value = prev && prev !== '0' ? prev : 120;
+  }
   inp.disabled = all;
-  if (!all && (!inp.value || Number(inp.value) === 0)) inp.value = 120;
+  inp.classList.toggle('hidden', all);              // 隐藏根数框，显示静态「全部」
+  const txt = $('p-history-all-txt');
+  if (txt) txt.classList.toggle('hidden', !all);
 }
 
 /** 定窗时训练期由日期区间决定，训练推进(根)不生效 */
@@ -1238,6 +1262,7 @@ function initTheme() {
   sel.value = window.BzTheme.get();
   sel.onchange = () => window.BzTheme.apply(sel.value);
   window.BzTheme.onChange(() => {
+    syncTrainMaDots();
     if (chart && S && !$('app-train').classList.contains('hidden') &&
         !$('screen-train').classList.contains('hidden')) {
       rebuildTrainTheme();

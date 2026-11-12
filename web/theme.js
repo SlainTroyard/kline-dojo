@@ -72,6 +72,12 @@ window.BzTheme = (() => {
     },
   };
 
+  // 浅色主题下均线改用加深色，避免亮黄/亮紫在白底上对比度不足
+  const MA_LIGHT = {
+    5: '#8f6400', 10: '#2f6fd0', 13: '#0b6e70', 20: '#7c3aed',
+    21: '#c2185b', 40: '#4f7f2f', 60: '#c25e00', 120: '#5f6b7a',
+  };
+
   const _saved = localStorage.getItem('bz_theme');
   let current = THEMES[_saved] ? _saved : 'dark';   // 坏值回退，避免 colors() 返回 undefined
   const listeners = [];
@@ -79,6 +85,10 @@ window.BzTheme = (() => {
   function get() { return current; }
   function colors() { return THEMES[current]; }
   function list() { return Object.keys(THEMES).map((k) => ({ key: k, label: THEMES[k].label })); }
+  function maColor(p, fallback) {
+    return (current === 'light' || current === 'cream' || current === 'blue') && MA_LIGHT[p]
+      ? MA_LIGHT[p] : fallback;
+  }
 
   function apply(name, silent) {
     if (!THEMES[name]) return;
@@ -91,5 +101,5 @@ window.BzTheme = (() => {
   function onChange(f) { listeners.push(f); }
 
   apply(current, true);
-  return { get, colors, apply, onChange, list };
+  return { get, colors, apply, onChange, list, maColor };
 })();

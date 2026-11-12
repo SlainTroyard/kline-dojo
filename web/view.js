@@ -152,7 +152,7 @@ window.createBoard = function createBoard(cfg) {
       grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
       rightPriceScale: {
         borderColor: T.line, minimumWidth: AXIS_W, maximumWidth: AXIS_W,
-        scaleMargins: { top: 0.05, bottom: 0.05 },
+        scaleMargins: { top: 0.08, bottom: 0.05 },   // 顶部留给可换行的图例
       },
       timeScale: { borderColor: T.line, visible: false, rightOffset: 5 },
       crosshair: { mode: 0 },
@@ -165,7 +165,9 @@ window.createBoard = function createBoard(cfg) {
     maS = {};
     for (const m of MA_DEFS) {
       maS[m.p] = chart.addLineSeries({
-        color: m.color, lineWidth: 1, title: `MA${m.p}`,
+        color: window.BzTheme.maColor(m.p, m.color), lineWidth: 1,
+        // 不设 title：图表库会在右侧价格轴额外画「MA5 1407.6」标签，
+        // 和筹码峰/彼此重叠；均线名称已由顶部图例给出。
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
     }
@@ -323,9 +325,12 @@ window.createBoard = function createBoard(cfg) {
     const scope = isMin
       ? `${rawBars[0].d.slice(0, 10)} ~ ${rawBars[rawBars.length - 1].d.slice(0, 10)}`
       : `${rawBars[0].d} ~ ${rawBars[rawBars.length - 1].d}`;
-    const cnt = isMin ? `分钟 ${rawBars.length} 根（限最近）` : `日线 ${rawBars.length} 根`;
+    // 日K/分钟当前周期已是原始根数，不再重复「日线 N 根 · 日K N 根」
+    const cnt = isMin ? `${pn} ${rawBars.length} 根（限最近）`
+      : period === 'D' ? `日K ${bars.length} 根`
+        : `日线 ${rawBars.length} 根 · ${pn} ${bars.length} 根`;
     $('title').textContent =
-      `${curName}（${scope}，${cnt} · ${pn} ${bars.length} 根` +
+      `${curName}（${scope} · ${cnt}` +
       (cfg.mode === 'market' && asof ? ` · 数据截至 ${asof.slice(0, 10)}${isMin ? ' ' + asof.slice(11, 16) : ''}` : '') + `）`;
   }
 
@@ -500,7 +505,8 @@ window.createBoard = function createBoard(cfg) {
         updateLegend(null);
       };
       const dot = document.createElement('i');
-      dot.style.background = m.color;
+      dot.dataset.ma = String(m.p);
+      dot.style.background = window.BzTheme.maColor(m.p, m.color);
       lab.append(cb, dot, document.createTextNode(`MA${m.p}`));
       menu.appendChild(lab);
     }
@@ -513,6 +519,16 @@ window.createBoard = function createBoard(cfg) {
     });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') menu.classList.add('hidden');
+    });
+  }
+
+  /** 主题切换后同步 MA 菜单色点（图表 series 会重建，菜单不重建） */
+  function syncMaDots() {
+    const menu = $('ma-menu');
+    if (!menu) return;
+    menu.querySelectorAll('i[data-ma]').forEach((dot) => {
+      const m = MA_DEFS.find((x) => String(x.p) === dot.dataset.ma);
+      if (m) dot.style.background = window.BzTheme.maColor(m.p, m.color);
     });
   }
 
@@ -533,17 +549,20 @@ window.createBoard = function createBoard(cfg) {
     const b = bars[idx];
     const chg = idx > 0 ? (b.c / bars[idx - 1].c - 1) * 100 : 0;
     const closes = bars.map((x) => x.c);
-    const sec = (txt, color) => txt ? `<span style="color:${color};margin-left:12px">${txt}</span>` : '';
+    const sec = (txt, color) => txt ? `<span class="lg" style="color:${color}">${txt}</span>` : '';
     let html =
-      `<b style="color:${chg >= 0 ? T.up : T.down}">${curName} ${b.d}</b> ` +
+      `<span class="lg"><b style="color:${chg >= 0 ? T.up : T.down}">${curName} ${b.d}</b> ` +
       `开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
-      `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
+      `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span></span>`;
     if (toggles.maSel.length) {
       const on = maOn();
-      html += sec(MA_DEFS.filter((m) => on.has(m.p)).map((m) => {
+      const maParts = MA_DEFS.filter((m) => on.has(m.p)).map((m) => {
         const v = window.Ind.sma(closes, m.p)[idx];
-        return v == null ? '' : `MA${m.p} <b>${v.toFixed(1)}</b>`;
-      }).filter(Boolean).join(' '), T.dim);
+        if (v == null) return '';
+        const col = window.BzTheme.maColor(m.p, m.color);
+        return `<span style="color:${col}">MA${m.p}</span> <b>${v.toFixed(1)}</b>`;
+      }).filter(Boolean);
+      if (maParts.length) html += `<span class="lg" style="color:${T.dim}">${maParts.join(' ')}</span>`;
     }
     const xv = {};                       // 小面板十字光标定位值（各面板用自身指标值）
     if (toggles.vol) { xv.vol = b.v; html += sec(`VOL <b>${fmtVol(b.v)}</b>`, b.c >= b.o ? T.up : T.down); }
@@ -951,6 +970,7 @@ window.createBoard = function createBoard(cfg) {
       if (!inited) return;
       if (chart) {
         buildChart();
+        syncMaDots();
         overlay.setLines(loadLines());
         if (rawBars.length) renderAll();
       }
