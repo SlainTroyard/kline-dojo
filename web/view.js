@@ -16,6 +16,7 @@ window.createBoard = function createBoard(cfg) {
   let volChart = null, bollChart = null, macdChart = null, kdjChart = null;   // 独立小面板
   let maS = {}, bollS = {}, bollBar = null, macdS = {}, kdjS = {};
   let overlay = null;
+  let chip = null;                        // 筹码峰（右侧价格分布直方图）
   let insts = [];
   let curKey = null, curName = '';
   let rawBars = [];                       // 全量日线（分钟模式下为分钟 bar）
@@ -28,7 +29,7 @@ window.createBoard = function createBoard(cfg) {
     catch { return defaults; }
   }
   const toggles = loadToggles(lsKey('toggles'),
-    { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false });
+    { ma: true, boll: false, macd: true, kdj: false, vol: true, chip: false, chan: false, duan: false, bei: false });
 
   /* ---------------- 小地图：全历史缩略条（点击/拖动跳转可视区间） ---------------- */
   class Minimap {
@@ -198,6 +199,9 @@ window.createBoard = function createBoard(cfg) {
       onModeChange: syncDrawBtns,
       onChange: saveLines,
     });
+    // 筹码峰：跟随主面板 chart 重建（canvas 本身持久）
+    if (!chip && window.ChipProfile) chip = new window.ChipProfile(document.getElementById(P + '-chip'));
+    if (chip) chip.attach(chart, candle);
     if (!minimap) minimap = new Minimap();
     minimap.attach(chart);
     // 主面板 → 小面板：可视范围单向同步（小面板 handleScale 已关，无回环）
@@ -311,6 +315,7 @@ window.createBoard = function createBoard(cfg) {
       to: Math.min(bars.length + 5, bars.length + 8),
     });
     updateLegend(null);
+    chip && chip.setBars(bars);
     const pn = { '5m': '5分', '30m': '30分', D: '日K', W: '周K', M: '月K', Y: '年K' }[period];
     const isMin = MINUTE_PERIODS.includes(period);
     const scope = isMin
@@ -336,6 +341,7 @@ window.createBoard = function createBoard(cfg) {
     visPane('pane-macd', toggles.macd);
     visPane('pane-kdj', toggles.kdj);
     refreshAxisOwner();
+    chip && chip.setVisible(!!toggles.chip);
     // 关闭的指标清空数据（面板隐藏即可见性，清数据防内存与轴残留）
     if (rawBars.length) refillIndicators(curBars());
     root.querySelectorAll('[data-tg]').forEach((b) => {

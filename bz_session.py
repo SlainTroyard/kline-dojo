@@ -423,34 +423,48 @@ def _index_df(key: str) -> pd.DataFrame:
 
 
 def _new_index_session(p: dict) -> tuple[dict, dict]:
+    """指数会话。随机模式逐个尝试：指数成立时间差很大（恒生科技 2020 才有数据），
+    年份区间/全史模式下某些指数无合法窗口时跳过，换下一个。"""
     rng = random.SystemRandom()
-    keys = [p["index_key"]] if p["index_key"] else list(bz_index.BY_KEY)
-    key = rng.choice(keys)
-    meta = bz_index.BY_KEY[key]
-    df = _index_df(key)
-
-    if p["date_from"]:
-        s, e = _fixed_window(df, p, need_limit=False)
-        bars, dates = _bars_payload(df, s, e)
-        if not bars or any(b["h"] < b["l"] for b in bars):
-            raise RuntimeError("该窗口数据异常")
-        p["_hist"] = _first_train_idx(df, p) - s
-        p["_fwd"] = len(bars) - p["_hist"]
+    if p["index_key"]:
+        keys = [p["index_key"]]
     else:
-        ends = _feasible_ends(df, p, code="", need_limit=False, require_limits=False)
-        if not ends:
-            raise RuntimeError("该指数在指定年份区间没有足够长的窗口")
-        rng.shuffle(ends)
-        e = ends[0]
-        i0 = e - p["forward"] + 1
-        s = 0 if p["history"] == 0 else i0 - p["history"]
-        bars, dates = _bars_payload(df, s, e)
-        p["_hist"], p["_fwd"] = i0 - s, p["forward"]
+        keys = list(bz_index.BY_KEY)
+        rng.shuffle(keys)
 
-    public = _public_payload("index", p, bars, board="index", is_etf=False)
-    secret = {
-        "code": key, "name": meta["name"], "board": "index", "category": "index",
-        "start_date": dates[0], "end_date": dates[-1], "dates": dates,
-        "params": {k: v for k, v in p.items() if not k.startswith("_")},
-    }
-    return public, secret
+    last_err = "没有可用指数"
+    for key in keys:
+        meta = bz_index.BY_KEY[key]
+        try:
+            df = _index_df(key)
+            if p["date_from"]:
+                s, e = _fixed_window(df, p, need_limit=False)
+                bars, dates = _bars_payload(df, s, e)
+                if not bars or any(b["h"] < b["l"] for b in bars):
+                    raise RuntimeError("该窗口数据异常")
+                p["_hist"] = _first_train_idx(df, p) - s
+                p["_fwd"] = len(bars) - p["_hist"]
+            else:
+                ends = _feasible_ends(df, p, code="", need_limit=False, require_limits=False)
+                if not ends:
+                    raise RuntimeError("该指数在指定年份区间没有足够长的窗口")
+                rng.shuffle(ends)
+                e = ends[0]
+                i0 = e - p["forward"] + 1
+                s = 0 if p["history"] == 0 else i0 - p["history"]
+                bars, dates = _bars_payload(df, s, e)
+                p["_hist"], p["_fwd"] = i0 - s, p["forward"]
+        except (RuntimeError, ValueError) as ex:
+            last_err = f"{meta['name']}: {ex}"
+            if p["index_key"]:
+                raise
+            continue
+
+        public = _public_payload("index", p, bars, board="index", is_etf=False)
+        secret = {
+            "code": key, "name": meta["name"], "board": "index", "category": "index",
+            "start_date": dates[0], "end_date": dates[-1], "dates": dates,
+            "params": {k: v for k, v in p.items() if not k.startswith("_")},
+        }
+        return public, secret
+    raise RuntimeError(f"没有符合条件的指数（{last_err}），请调整年份区间")

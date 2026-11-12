@@ -142,6 +142,7 @@
       <button data-tt="macd" class="tg-btn on">MACD</button>
       <button data-tt="kdj" class="tg-btn">KDJ</button>
       <button data-tt="vol" class="tg-btn on">VOL</button>
+      <button data-tt="chip" class="tg-btn" title="筹码峰：右侧按价格分布成交量（红=获利盘 蓝=套牢盘，黄=峰顶）">筹码</button>
       <button data-tt="chan" class="tg-btn" title="缠论笔+中枢">缠论</button>
       <button data-tt="duan" class="tg-btn" title="缠论线段（实验性：极值破坏法，未做特征序列，仅供目视参考）">段</button>
       <button data-tt="bei" class="tg-btn" title="背驰：同向相邻笔 MACD 柱面积比较，价创新高/新低而面积收缩">背</button>
@@ -169,6 +170,7 @@
     <div class="pane pane-main" id="train-pane-main">
       <div id="chart"></div>
       <div id="train-legend" class="view-legend"></div>
+      <canvas id="train-chip" class="chip-canvas hidden" title="筹码峰：可视区间成交量按价格分布；红=获利盘 蓝=套牢盘"></canvas>
     </div>
     <div class="pane hidden" id="train-pane-boll"><span class="pane-tag">BOLL(20,2)</span><div id="train-bollchart"></div></div>
     <div class="pane" id="train-pane-vol"><span class="pane-tag">VOL</span><div id="train-volchart"></div></div>
@@ -259,6 +261,7 @@
           <button data-tg="macd" class="tg-btn on">MACD</button>
           <button data-tg="kdj" class="tg-btn">KDJ</button>
           <button data-tg="vol" class="tg-btn on">VOL</button>
+          <button data-tg="chip" class="tg-btn" title="筹码峰：右侧按价格分布成交量（红=获利盘 蓝=套牢盘，黄=峰顶）">筹码</button>
           <button data-tg="chan" class="tg-btn" title="缠论笔+中枢">缠论</button>
           <button data-tg="duan" class="tg-btn" title="缠论线段（实验性：极值破坏法，未做特征序列，仅供目视参考）">段</button>
           <button data-tg="bei" class="tg-btn" title="背驰：同向相邻笔 MACD 柱面积比较，价创新高/新低而面积收缩">背</button>
@@ -285,6 +288,7 @@
         <div class="pane pane-main" id="view-pane-main">
           <div id="view-chart"></div>
           <div id="view-legend" class="view-legend"></div>
+          <canvas id="view-chip" class="chip-canvas hidden" title="筹码峰：可视区间成交量按价格分布；红=获利盘 蓝=套牢盘"></canvas>
         </div>
         <div class="pane hidden" id="view-pane-boll"><span class="pane-tag">BOLL(20,2)</span><div id="view-bollchart"></div></div>
         <div class="pane" id="view-pane-vol"><span class="pane-tag">VOL</span><div id="view-volchart"></div></div>
@@ -336,6 +340,7 @@
           <button data-tg="macd" class="tg-btn on">MACD</button>
           <button data-tg="kdj" class="tg-btn">KDJ</button>
           <button data-tg="vol" class="tg-btn on">VOL</button>
+          <button data-tg="chip" class="tg-btn" title="筹码峰：右侧按价格分布成交量（红=获利盘 蓝=套牢盘，黄=峰顶）">筹码</button>
           <button data-tg="chan" class="tg-btn" title="缠论笔+中枢">缠论</button>
           <button data-tg="duan" class="tg-btn" title="缠论线段（实验性）">段</button>
           <button data-tg="bei" class="tg-btn" title="背驰：同向相邻笔 MACD 柱面积比较">背</button>
@@ -362,6 +367,7 @@
         <div class="pane pane-main" id="mkt-pane-main">
           <div id="mkt-chart"></div>
           <div id="mkt-legend" class="view-legend"></div>
+          <canvas id="mkt-chip" class="chip-canvas hidden" title="筹码峰：可视区间成交量按价格分布；红=获利盘 蓝=套牢盘"></canvas>
         </div>
         <div class="pane hidden" id="mkt-pane-boll"><span class="pane-tag">BOLL(20,2)</span><div id="mkt-bollchart"></div></div>
         <div class="pane" id="mkt-pane-vol"><span class="pane-tag">VOL</span><div id="mkt-volchart"></div></div>
@@ -415,6 +421,7 @@
 <script src="theme.js"></script>
 <script src="ind.js"></script>
 <script src="draw.js"></script>
+<script src="chip.js"></script>
 <script src="view.js"></script>
 <script src="app.js"></script>
 <script>View.init(); Mkt.init();</script>

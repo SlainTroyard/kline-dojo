@@ -349,7 +349,7 @@ select.tg-btn option { background: var(--panel); color: var(--text); }
   position: absolute; top: 2px; left: 6px; z-index: 6; font-size: 10.5px;
   color: var(--dim); pointer-events: none;
 }
-#view-pane-boll, #mkt-pane-boll, #train-pane-boll { flex: 0 1 56px; min-height: 52px; }   /* BOLL 缩略面板更窄 */
+#view-pane-boll, #mkt-pane-boll, #train-pane-boll { flex: 0 1 112px; min-height: 92px; }   /* BOLL 三轨看清，约为普通小面板 1.3 倍 */
 /* 看板整页有界高度：主图/小地图/联动副图在列内 flex 分配，不出视口 */
 #screen-view { display: flex; flex-direction: column; height: calc(100vh - 64px); padding-bottom: 12px; overflow: hidden; }
 #screen-view .view-layout { flex: 1; min-height: 0; }
@@ -360,6 +360,11 @@ select.tg-btn option { background: var(--panel); color: var(--text); }
 #screen-mkt .view-list { max-height: none; min-height: 0; }
 #screen-mkt .view-toolbar { padding-top: 2px; }
 .mkt-title-inline { align-self: center; margin: 0 6px 0 2px; white-space: nowrap; }
+/* 筹码峰：主面板右侧叠层（价格轴左侧 62px 处，宽 66px，不拦鼠标） */
+.chip-canvas {
+  position: absolute; top: 0; right: 62px; width: 66px; height: 100%;
+  pointer-events: none; z-index: 5;
+}
 /* 小地图（全历史缩略条） */
 .view-minimap { display: block; width: 100%; height: 34px; flex: none; margin-top: 4px; cursor: crosshair; border-radius: 6px; }
 /* 联动副图：主图 flex 1.8 : 副图 flex 1 */

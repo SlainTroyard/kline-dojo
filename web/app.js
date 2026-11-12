@@ -55,6 +55,7 @@ let lastCategory = 'stock', lastParams = {};
 
 let chart = null, candle = null, volS = null, maS = {}, bollS = {}, bollBar = null, macdS = {}, kdjS = {};
 let volChart = null, bollChart = null, macdChart = null, kdjChart = null;   // 独立小面板
+let trainChip = null;                      // 筹码峰（右侧价格分布）
 let trainThemeDirty = false;             // 看板页切主题后回训练页签需补重建
 let overlay = null;             // 训练会话内画线（不持久化）
 let pendingOrders = [];         // next_open 模式挂单 [{side:'buy'|'sell', shares}]
@@ -67,7 +68,7 @@ function loadToggles(key, defaults) {      // localStorage 坏值不炸全局（
   catch { return defaults; }
 }
 const tToggles = loadToggles('bz_train_toggles',
-  { ma: true, boll: false, macd: true, kdj: false, vol: true, chan: false, duan: false, bei: false });
+  { ma: true, boll: false, macd: true, kdj: false, vol: true, chip: false, chan: false, duan: false, bei: false });
 
 let selectedCodes = new Map();  // 本局自选标的 code → name
 let watchlist = [];             // 我的自选 [{code,name}]（localStorage）
@@ -323,6 +324,8 @@ function buildTrainChart() {
   overlay = new window.Overlay(chart, candle, $('train-pane-main'), {
     onModeChange: syncTrainDrawBtns,
   });
+  if (!trainChip && window.ChipProfile) trainChip = new window.ChipProfile(document.getElementById('train-chip'));
+  if (trainChip) trainChip.attach(chart, candle);
   // 主面板 → 小面板：可视范围单向同步（小面板 handleScale 已关，无回环）
   let syncing = false;
   chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
@@ -500,6 +503,7 @@ function renderTrainChart(refit = false) {
 
   if (vr) chart.timeScale().setVisibleLogicalRange(vr);
   else chart.timeScale().fitContent();
+  trainChip && trainChip.setBars(bars);
   updateTrainLegend(null);
 }
 
@@ -512,6 +516,7 @@ function applyTrainToggles(skipRender = false) {
   visPane('train-pane-macd', tToggles.macd);
   visPane('train-pane-kdj', tToggles.kdj);
   refreshTrainAxisOwner();
+  trainChip && trainChip.setVisible(!!tToggles.chip);
   document.querySelectorAll('[data-tt]').forEach((b) => {
     b.classList.toggle('on', !!tToggles[b.dataset.tt]);
   });
