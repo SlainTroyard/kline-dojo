@@ -20,7 +20,7 @@ window.ChipProfile = class ChipProfile {
     this._busy = false;
     this._ro = null;
     if (typeof ResizeObserver !== 'undefined' && canvas.parentElement) {
-      this._ro = new ResizeObserver(() => this.redraw());
+      this._ro = new ResizeObserver(() => { this._syncPad(); this.redraw(); });
       this._ro.observe(canvas.parentElement);
     }
   }
@@ -53,7 +53,8 @@ window.ChipProfile = class ChipProfile {
   }
 
   _barSpacing() {
-    return (this.chart && this.chart.timeScale().options().barSpacing) || 6;
+    const bs = this.chart && this.chart.timeScale().options().barSpacing;
+    return Number.isFinite(bs) && bs > 0 ? bs : 6;   // 隐藏页/未布局时回退默认
   }
 
   /** 需要的空白根数：画布宽 / 每根像素宽 */
@@ -68,13 +69,17 @@ window.ChipProfile = class ChipProfile {
   /** 右侧空白 = pad 根：rightOffset 应对滚回右缘的场景，可视窗口平移应对缩放 */
   _syncPad() {
     if (!this.chart || !this.on) return;
+    // 主图时间轴是隐藏的，timeScale().width() 恒为 0，只能用容器尺寸判断是否已布局
+    const host = this.cvs.parentElement;
+    if (!host || host.clientWidth <= 0 || host.clientHeight <= 0) return;
     const ts = this.chart.timeScale();
     const pad = this._padFor();
+    if (!Number.isFinite(pad)) return;
     if (pad !== this._lastRO) {
       this._lastRO = pad;
       this._busy = true;
-      ts.applyOptions({ rightOffset: Math.max(2, pad + 1) });
-      this._busy = false;
+      try { ts.applyOptions({ rightOffset: Math.max(2, pad + 1) }); }
+      finally { this._busy = false; }
     }
     const n = this.bars.length;
     const vr = ts.getVisibleLogicalRange();
@@ -83,8 +88,8 @@ window.ChipProfile = class ChipProfile {
     const d = n + pad - vr.to;                      // 目标右缘 n+pad
     if (Math.abs(d) < 1.5) return;
     this._busy = true;
-    ts.setVisibleLogicalRange({ from: vr.from + d, to: n + pad });
-    this._busy = false;
+    try { ts.setVisibleLogicalRange({ from: vr.from + d, to: n + pad }); }
+    finally { this._busy = false; }
   }
 
   _clear() {
@@ -104,7 +109,7 @@ window.ChipProfile = class ChipProfile {
     const box = this.cvs.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     const w = Math.round(box.width), h = Math.round(box.height);
-    if (w <= 0 || h <= 0) return;
+    if (w < 8 || h < 8) return;                 // 隐藏页不画
     if (this.cvs.width !== Math.round(w * dpr) || this.cvs.height !== Math.round(h * dpr)) {
       this.cvs.width = Math.round(w * dpr);
       this.cvs.height = Math.round(h * dpr);
@@ -156,8 +161,10 @@ window.ChipProfile = class ChipProfile {
 
     const T = window.BzTheme.colors();
     const close = this.bars[i1].c;
-    const padX = 3;
-    const maxW = w - padX * 2;
+    const padX = 3;                        // 左缘（贴 K 线侧）
+    const padR = 8;                        // 右缘空隙：不顶到价格轴
+    const padB = 6;                        // 底部空隙：最低筹码条不贴边
+    const maxW = w - padX - padR;
     const Y = (price) => this.series.priceToCoordinate(price);
     const top0 = Y(lo + step);          // 箱顶（高价在上）
     if (top0 == null) return;
@@ -175,10 +182,13 @@ window.ChipProfile = class ChipProfile {
       const price = lo + (k + 0.5) * step;
       const bw = Math.max(1, (bins[k] / mx) * maxW);
       const isPoc = k === pocK;
+      // 底边裁到 h-padB，最低的筹码条留出空隙
+      const hh2 = Math.min(hh - 0.6, h - padB - top);
+      if (hh2 <= 0.5) continue;
       // 获利盘（低于现价）红、套牢盘（高于现价）蓝；峰顶用主题色强调
       ctx.fillStyle = isPoc ? T.accent : price <= close ? T.up : T.blue;
       ctx.globalAlpha = isPoc ? 0.85 : price <= close ? 0.5 : 0.42;
-      ctx.fillRect(padX + maxW - bw, top + 0.3, bw, Math.max(1, hh - 0.6));
+      ctx.fillRect(padX + maxW - bw, top + 0.3, bw, hh2);
     }
     ctx.globalAlpha = 1;
 
@@ -191,7 +201,7 @@ window.ChipProfile = class ChipProfile {
         const tw = ctx.measureText(txt).width;
         ctx.fillStyle = T.accent;
         ctx.textAlign = 'right';
-        ctx.fillText(txt, padX + maxW, Math.max(10, y - 9));
+        ctx.fillText(txt, w - padR, Math.max(10, Math.min(y - 9, h - padB - 12)));
         ctx.textAlign = 'left';
       }
     }
