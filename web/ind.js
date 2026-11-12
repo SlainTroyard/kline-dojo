@@ -264,7 +264,7 @@ window.Ind = (() => {
     if (!(tg.chan || tg.duan || tg.bei)) return { bis: [], zs: [], duans: [], divs: [] };
     const c = chanlun(bars);
     return {
-      bis: c.bis,
+      bis: tg.chan ? c.bis : [],      // 笔属「缠论」开关；段/背单独开关不残留笔
       zs: tg.chan ? c.zs : [],
       duans: tg.duan ? c.duans : [],
       divs: tg.bei ? c.divs : [],
