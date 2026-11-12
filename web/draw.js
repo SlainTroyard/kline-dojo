@@ -1,7 +1,8 @@
 /* 画线工具（canvas 叠加层）+ 缠论/画线统一渲染（K线道场 · 看板/训练共用）
  * 线存逻辑坐标，看板按指数 key 持久化 localStorage；周期切换时日期自动
  * 吸附到该周期最近的 bar。工具（v1.2）：
- *   trend   趋势线（2 点）         hline   水平线（1 点）
+ *   trend   趋势线（2 点）         arrow   箭头（2 点，第二点为箭头方向）
+ *   hline   水平线（1 点）
  *   fib     斐波那契回撤（2 点）    channel 平行通道（3 点：基线 2 点+宽度 1 点）
  *   rect    矩形区域（2 点）        text    文字标注（1 点，弹窗输入）
  * 通用能力：磁吸（画点工具 12px 内吸附最近 bar 的 OHLC）、撤销/重做
@@ -67,7 +68,7 @@ window.Overlay = class Overlay {
     this.bars = [];            // 当前周期 bars [{d,o,h,l,c,v}]（吸附日期用）
     this.lines = [];           // 用户画线
     this.chan = { bis: [], zs: [], duans: [], divs: [] };
-    this.mode = 'none';        // none | trend | hline | fib | channel | rect | drect | pen | text | select | del
+    this.mode = 'none';        // none | trend | arrow | hline | fib | channel | rect | drect | pen | text | select | del
     this.pts = [];             // 多点工具已落点 [{d, p}]
     this.style = { color: null, width: null, dash: null };    // 新画线默认样式（null=按类型取主题默认）
     this.selected = null;      // 选择模式下选中的线下标
@@ -111,7 +112,7 @@ window.Overlay = class Overlay {
   }
 
   /* 各工具需要的点击数 */
-  static get NEED() { return { trend: 2, hline: 1, fib: 2, channel: 3, rect: 2, text: 1 }; }
+  static get NEED() { return { trend: 2, arrow: 2, hline: 1, fib: 2, channel: 3, rect: 2, text: 1 }; }
   static get FIB_RATIOS() { return ['0', '0.236', '0.382', '0.5', '0.618', '0.786', '1']; }
 
   setBars(bars) { this.bars = bars || []; this.pts = []; this.redraw(); }
@@ -166,7 +167,7 @@ window.Overlay = class Overlay {
   _st(ln) {
     const T = window.BzTheme.colors();
     const def = {
-      trend: T.trend, hline: T.hline, fib: T.fib, channel: T.channel,
+      trend: T.trend, arrow: T.trend, hline: T.hline, fib: T.fib, channel: T.channel,
       rect: T.rect, drect: T.rect, pen: T.trend, text: T.note,
     }[ln.type] || T.trend;
     const s = ln.st || {};
@@ -332,6 +333,7 @@ window.Overlay = class Overlay {
     let ln = null;
     if (this.mode === 'hline') ln = { type: 'hline', d1: d, p1: p };
     else if (this.mode === 'trend') ln = { type: 'trend', d1: a.d, p1: a.p, d2: b.d, p2: b.p };
+    else if (this.mode === 'arrow') ln = { type: 'arrow', d1: a.d, p1: a.p, d2: b.d, p2: b.p };
     else if (this.mode === 'fib') ln = { type: 'fib', d1: a.d, p1: a.p, d2: b.d, p2: b.p };
     else if (this.mode === 'rect') ln = { type: 'rect', d1: a.d, p1: a.p, d2: b.d, p2: b.p };
     else if (this.mode === 'channel') ln = { type: 'channel', d1: a.d, p1: a.p, d2: b.d, p2: b.p, d3: c.d, p3: c.p };
@@ -623,6 +625,25 @@ window.Overlay = class Overlay {
         ctx.strokeRect(a.x - 3, a.y - 14, tw + 8, 18);
         ctx.fillStyle = st.color;
         ctx.fillText(ln.txt, a.x + 1, a.y - 1);
+      } else if (ln.type === 'arrow') {
+        const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
+        if (!a || !b) continue;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // 实心三角箭头，方向由第二点决定
+        const ang = Math.atan2(b.y - a.y, b.x - a.x);
+        const L = Math.max(8, st.width * 5);
+        const W = L * 0.55;
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y);
+        ctx.lineTo(b.x - L * Math.cos(ang) + W * Math.sin(ang),
+          b.y - L * Math.sin(ang) - W * Math.cos(ang));
+        ctx.lineTo(b.x - L * Math.cos(ang) - W * Math.sin(ang),
+          b.y - L * Math.sin(ang) + W * Math.cos(ang));
+        ctx.closePath();
+        ctx.fill();
       } else {                    // trend
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
         if (!a || !b) continue;
