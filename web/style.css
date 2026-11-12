@@ -373,7 +373,7 @@ select.tg-btn option { background: var(--panel); color: var(--text); }
   color: var(--dim); pointer-events: none;
 }
 #view-pane-boll, #mkt-pane-boll, #train-pane-boll { flex: 0 1 112px; min-height: 92px; }   /* BOLL 三轨看清，约为普通小面板 1.3 倍 */
-/* 看板整页有界高度：主图/小地图/联动副图在列内 flex 分配，不出视口 */
+/* 看板整页有界高度：主图/小地图在列内 flex 分配，不出视口 */
 #screen-view { display: flex; flex-direction: column; height: calc(100vh - 64px); padding-bottom: 12px; overflow: hidden; }
 #screen-view .view-layout { flex: 1; min-height: 0; }
 /* 行情页同法且全宽 + 侧栏收窄：K 线区域最大化（自选栏 200→150px） */
@@ -383,7 +383,7 @@ select.tg-btn option { background: var(--panel); color: var(--text); }
 #screen-mkt .view-list { max-height: none; min-height: 0; }
 #screen-mkt .view-toolbar { padding-top: 2px; }
 .mkt-title-inline { align-self: center; margin: 0 6px 0 2px; white-space: nowrap; }
-/* 行情页右侧工具侧边栏：周期/复权/联动/指标开关竖排，把纵向空间全留给图表 */
+/* 行情页右侧工具侧边栏：周期/复权/指标开关竖排，把纵向空间全留给图表 */
 .mkt-body { flex: 1; min-height: 0; display: flex; gap: 8px; }
 .mkt-chart-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .mkt-tool-side {
@@ -444,11 +444,6 @@ select.tg-btn option { background: var(--panel); color: var(--text); }
 }
 /* 小地图（全历史缩略条） */
 .view-minimap { display: block; width: 100%; height: 34px; flex: none; margin-top: 4px; cursor: crosshair; border-radius: 6px; }
-/* 联动副图：主图 flex 1.8 : 副图 flex 1 */
-#view-sub-wrap { flex: 1 1 0; min-height: 170px; display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
-#view-sub-wrap.hidden { display: none; }
-.sub-chart { flex: 1; min-height: 0; }
-.view-main.sub-on .view-chart-wrap { flex: 1.8 1 0; }
 /* 遮住副图区背后的主轴刻度（单chart多pane方案中主轴刻度会画满全高，宽值域外推出负值误导） */
 .axis-cover {
   position: absolute; right: 0; bottom: 0; height: 42%;

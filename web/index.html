@@ -257,7 +257,6 @@
           <button data-period="W" class="tg-btn">周K</button>
           <button data-period="M" class="tg-btn">月K</button>
           <button data-period="Y" class="tg-btn">年K</button>
-          <button id="view-sync" class="tg-btn" title="联动副图：同标的不同周期、或另选标的对照；十字光标与可视范围与主图同步">⟷ 联动</button>
         </span>
         <span class="tgroup">
           <span class="ma-wrap"><button id="view-ma-btn" class="tg-btn on" title="均线选择：勾选要显示的周期">MA ▾</button><div id="view-ma-menu" class="ma-menu hidden"></div></span>
@@ -304,19 +303,6 @@
         <div class="pane hidden" id="view-pane-kdj"><span class="pane-tag">KDJ(9,3,3)</span><div id="view-kdjchart"></div></div>
       </div>
       <canvas id="view-minimap" class="view-minimap" title="全历史缩略图：点击/拖动跳转可视区间"></canvas>
-      <div id="view-sub-wrap" class="hidden">
-        <div class="view-toolbar sub-toolbar">
-          <span class="tgroup">
-            <select id="view-sub-key" class="tg-btn" title="副图标的（默认同主图）"></select>
-            <button data-subp="D" class="tg-btn">日K</button>
-            <button data-subp="W" class="tg-btn on">周K</button>
-            <button data-subp="M" class="tg-btn">月K</button>
-            <button data-subp="Y" class="tg-btn">年K</button>
-          </span>
-          <span id="view-sub-title" class="view-title" style="font-size:12.5px;font-weight:400"></span>
-        </div>
-        <div id="view-sub" class="sub-chart"></div>
-      </div>
     </div>
   </div>
 </section>
@@ -368,19 +354,6 @@
             <div class="pane hidden" id="mkt-pane-kdj"><span class="pane-tag">KDJ(9,3,3)</span><div id="mkt-kdjchart"></div></div>
           </div>
           <canvas id="mkt-minimap" class="view-minimap" title="全历史缩略图：点击/拖动跳转可视区间"></canvas>
-          <div id="mkt-sub-wrap" class="hidden">
-            <div class="view-toolbar sub-toolbar">
-              <span class="tgroup">
-                <select id="mkt-sub-key" class="tg-btn" title="副图标的（默认同主图，限自选）"></select>
-                <button data-subp="D" class="tg-btn">日K</button>
-                <button data-subp="W" class="tg-btn on">周K</button>
-                <button data-subp="M" class="tg-btn">月K</button>
-                <button data-subp="Y" class="tg-btn">年K</button>
-              </span>
-              <span id="mkt-sub-title" class="view-title" style="font-size:12.5px;font-weight:400"></span>
-            </div>
-            <div id="mkt-sub" class="sub-chart"></div>
-          </div>
         </div>
         <aside class="mkt-tool-side" id="mkt-tool-side">
           <div class="ts-group" id="mkt-period-group">
@@ -391,7 +364,6 @@
             <button data-period="M" class="tg-btn">月K</button>
             <button data-period="Y" class="tg-btn">年K</button>
             <button id="mkt-adj" class="tg-btn span2" title="复权切换：前复权（锚定最新，与训练同口径）/ 不复权">前复权</button>
-            <button id="mkt-sync" class="tg-btn span2" title="联动副图：同标的不同周期、或另选自选标的对照；十字光标与可视范围与主图同步">⟷ 联动</button>
           </div>
           <div class="ts-group">
             <span class="ma-wrap span2">

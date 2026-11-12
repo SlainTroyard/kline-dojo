@@ -27,6 +27,8 @@ window.createBoard = function createBoard(cfg) {
   const MINUTE_PERIODS = ['5m', '30m'];   // 分钟周期（仅行情板；数据源 astock，收盘后更新）
   let adjMode = localStorage.getItem(lsKey('adj')) || 'qfq';   // 行情板复权：qfq/none
   let asof = '';                          // 数据截止时刻（行情板标题展示）
+  let liveTimer = null, liveBusy = false; // 盘中实时：只轮询当前主图标的
+  const LIVE_MS = 20000;                  // 交易时段轮询间隔
   function loadToggles(key, defaults) {    // localStorage 坏值不炸整个看板模块
     try { return Object.assign(defaults, JSON.parse(localStorage.getItem(key) || '{}')); }
     catch { return defaults; }
@@ -117,15 +119,7 @@ window.createBoard = function createBoard(cfg) {
     }
   }
   let minimap = null;
-
-  /* ---------------- 联动副图：同标的异周期 / 另选标的对照 ---------------- */
-  let syncOn = localStorage.getItem(lsKey('sync')) === '1';
-  let subChart = null, subCandle = null, subMA = {};
-  let subKey = '';                       // '' = 同主图
-  let subPeriod = localStorage.getItem(lsKey('subperiod')) || 'W';
-  let subRaw = [], subBars = [];         // 副图全量日线 / 当前周期聚合
-  let syncingVR = false;                 // 可视范围同步防回环
-
+  let syncingVR = false;                 // 主图 → 小面板可视范围同步防回环
 
   /* ---------------- 图表：主面板 + 指标小面板（各独立 chart，时间轴只在最底） ---------------- */
   const AXIS_W = 62;                       // 各面板右轴定宽 → 时间轴垂直对齐
@@ -215,7 +209,6 @@ window.createBoard = function createBoard(cfg) {
     // 主面板 → 小面板：可视范围单向同步（小面板 handleScale 已关，无回环）
     chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       minimap.redraw();
-      syncSubRange();                     // 联动副图
       if (r && !syncingVR) {
         syncingVR = true;
         for (const c of [bollChart, volChart, macdChart, kdjChart]) {
@@ -229,7 +222,6 @@ window.createBoard = function createBoard(cfg) {
     });
     chart.subscribeCrosshairMove((param) => {
       updateLegend(param);                // 内含小面板十字光标同步
-      crosshairToSub(param);
     });
     window.__bzView = { chart, overlay, minimap };   // 调试/自动化测试用
 
@@ -300,9 +292,10 @@ window.createBoard = function createBoard(cfg) {
     }
   }
 
-  function renderAll() {
+  function renderAll(keepView = false) {
     if (!chart || !curKey) return;
     if (!rawBars.length) { $('title').textContent = `${curName}：无数据`; return; }
+    const prevVR = keepView ? chart.timeScale().getVisibleLogicalRange() : null;
     const T = window.BzTheme.colors();
     const bars = curBars();
     const tOf = (b) => (b.t != null ? b.t : b.d);       // 分钟 bar 用 unix ts，日线用日期串
@@ -318,8 +311,8 @@ window.createBoard = function createBoard(cfg) {
     overlay.setChan(window.Ind.chanView(bars, toggles));
     minimap && minimap.setBars(bars);
 
-    // 默认显示最近 ~260 根（不足 260 根的周期从头铺满）
-    chart.timeScale().setVisibleLogicalRange({
+    // 默认显示最近 ~260 根；盘中增量刷新时保留用户当前视窗，避免每 20s 被拽回右端
+    chart.timeScale().setVisibleLogicalRange(prevVR || {
       from: Math.max(0, bars.length - 260),
       to: Math.min(bars.length + 5, bars.length + 8),
     });
@@ -339,6 +332,91 @@ window.createBoard = function createBoard(cfg) {
   /** 当前周期 bars：分钟=rawBars 原样（含 t），日线系=本地聚合 */
   function curBars() {
     return MINUTE_PERIODS.includes(period) ? rawBars : window.Ind.aggregate(rawBars, period);
+  }
+
+  /* ---------------- 盘中实时 K 线：只刷新当前主图标的 ----------------
+   * 日线最后一根走腾讯快照；5/30 分钟走新浪分钟 K（均含当天未收盘 bar）。
+   * 合并进 rawBars 后按现有周期重算指标；不写服务端任何数据文件。 */
+  let liveFast = true;                    // 最近一次响应是否处于交易时段
+
+  function sameBar(a, b) {
+    return a.d === b.d && a.o === b.o && a.h === b.h && a.l === b.l &&
+      a.c === b.c && a.v === b.v;
+  }
+
+  function mergeDailyLive(bar) {
+    if (!Array.isArray(bar) || bar.length < 6) return false;
+    const [d, o, h, l, c, v] = bar;
+    if (!d || !(o > 0) || !(h > 0) || !(l > 0) || !(c > 0)) return false;
+    const last = rawBars[rawBars.length - 1];
+    if (!last || d < last.d) return false;
+    const nb = { d, o: +o, h: +h, l: +l, c: +c, v: +v };
+    if (d === last.d) {
+      if (sameBar(last, nb)) return false;
+      rawBars[rawBars.length - 1] = nb;
+    } else {
+      rawBars.push(nb);
+    }
+    return true;
+  }
+
+  function mergeMinuteLive(bars) {
+    if (!Array.isArray(bars) || !bars.length || !rawBars.length) return false;
+    const idx = new Map(rawBars.map((b, i) => [b.d, i]));
+    let changed = false;
+    for (const row of bars) {
+      if (!Array.isArray(row) || row.length < 6) continue;
+      const [d, o, h, l, c, v] = row;
+      if (!d || !(o > 0) || !(h > 0) || !(l > 0) || !(c > 0)) continue;
+      const nb = { d, o: +o, h: +h, l: +l, c: +c, v: +v };
+      if (d.length > 10) nb.t = Math.floor(Date.parse(d.replace(' ', 'T')) / 1000);
+      const i = idx.get(d);
+      if (i != null) {
+        if (sameBar(rawBars[i], nb)) continue;
+        rawBars[i] = nb;
+        changed = true;
+      } else if (d > rawBars[rawBars.length - 1].d) {
+        rawBars.push(nb);
+        idx.set(d, rawBars.length - 1);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  async function refreshLive() {
+    if (liveBusy || !curKey || !rawBars.length) return;
+    if (document.hidden || root.classList.contains('hidden')) return;
+    const minute = MINUTE_PERIODS.includes(period);
+    if (minute && cfg.mode !== 'market') return;
+    const key = curKey, seq = selSeq;
+    const url = minute
+      ? `/api/market/live?code=${encodeURIComponent(key)}&freq=${period}`
+      : (cfg.mode === 'market'
+        ? `/api/market/live?code=${encodeURIComponent(key)}`
+        : `/api/index/live?key=${encodeURIComponent(key)}`);
+    liveBusy = true;
+    try {
+      const d = await fetch(url, { cache: 'no-store' }).then((r) => r.json());
+      if (seq !== selSeq || key !== curKey || d.error) return;
+      if (d.asof) asof = d.asof;
+      if (typeof d.trading === 'boolean') liveFast = d.trading;
+      const changed = minute ? mergeMinuteLive(d.bars) : mergeDailyLive(d.bar);
+      if (changed) renderAll(true);
+    } catch { /* 上游抖动：保留已有 bar，下轮再试 */ }
+    finally { liveBusy = false; }
+  }
+
+  /** 轮询器：交易时段 20s，非交易时段 2min；页面隐藏时也降速 */
+  function startLive() {
+    if (liveTimer) clearTimeout(liveTimer);
+    const tick = async () => {
+      await refreshLive();
+      const wait = document.hidden || root.classList.contains('hidden')
+        ? 60000 : (liveFast ? LIVE_MS : 120000);
+      liveTimer = setTimeout(tick, wait);
+    };
+    liveTimer = setTimeout(tick, LIVE_MS);
   }
 
   function applyToggles() {
@@ -515,28 +593,12 @@ window.createBoard = function createBoard(cfg) {
       try { watchlist = JSON.parse(localStorage.getItem('bz_watchlist') || '[]'); } catch { watchlist = []; }
       insts = watchlist.map((w) => ({ key: w.code, name: w.name, group: '自选' }));
       renderList();
-      fillSubSel();
       refreshQuotes();                               // 进入/刷新自选后立刻取行情
       return;
     }
     const d = await fetch('/api/index/list').then((r) => r.json());
     insts = d.instruments || [];
     renderList();
-    fillSubSel();
-  }
-
-  /** 联动副图标的下拉（bind 时 insts 尚空，loadList 后填充；DOM 构建 + 回设当前选择） */
-  function fillSubSel() {
-    const subSel = $('sub-key');
-    subSel.textContent = '';
-    for (const [val, label] of [['', '同主图'], ...['A股', '海外']
-      .flatMap((g) => insts.filter((i) => i.group === g)).map((i) => [i.key, i.name])]) {
-      const o = document.createElement('option');
-      o.value = val;
-      o.textContent = label;
-      subSel.appendChild(o);
-    }
-    subSel.value = subKey;               // 重建 options 后恢复用户选择
   }
 
   function renderList() {
@@ -687,7 +749,7 @@ window.createBoard = function createBoard(cfg) {
     return '/api/index/kline?key=' + encodeURIComponent(key);
   }
 
-  let selSeq = 0, subSeq = 0;            // 竞态守卫：晚到的旧响应不覆盖新选择
+  let selSeq = 0;                        // 竞态守卫：晚到的旧响应不覆盖新选择
 
   async function select(key) {
     curKey = key;
@@ -707,7 +769,7 @@ window.createBoard = function createBoard(cfg) {
       }));
       overlay.setLines(loadLines());
       renderAll();
-      if (syncOn) loadSub(subKey || curKey);   // 联动：主图换标的 → 副图跟随（同主图模式）
+      refreshLive();                            // 先出历史，再补当天未收盘 bar
     } catch (e) {
       if (seq === selSeq) $('title').textContent = `${curName} 加载失败：${e.message}`;
     }
@@ -726,132 +788,6 @@ window.createBoard = function createBoard(cfg) {
     } finally {
       btn.disabled = false;
       btn.textContent = '⟳ 同步数据';
-    }
-  }
-
-  /* ---------------- 联动副图 ---------------- */
-  function buildSubChart() {
-    if (subChart) { subChart.remove(); subChart = null; }
-    const T = window.BzTheme.colors();
-    subChart = LightweightCharts.createChart($('sub'), {
-      layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 11 },
-      grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
-      rightPriceScale: { borderColor: T.line, scaleMargins: { top: 0.05, bottom: 0.05 } },
-      timeScale: { borderColor: T.line, timeVisible: false, rightOffset: 3 },
-      crosshair: { mode: 0 },
-      autoSize: true,
-      handleScale: { axisPressedMouseMove: false },   // 副图缩放以主图为准
-    });
-    subCandle = subChart.addCandlestickSeries({
-      upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
-      wickUpColor: UP, wickDownColor: DOWN,
-    });
-    subMA = {
-      5: subChart.addLineSeries({ color: '#f0b90b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      20: subChart.addLineSeries({ color: '#c77dff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    };
-    subChart.subscribeCrosshairMove((param) => {
-      // 副图十字光标 → 主图（带收盘价定位）
-      if (param.time && chart && candle && rawBars.length) {
-        const b = rawBars.find((x) => x.d === param.time) ||
-          rawBars[_nearestIdx(rawBars, param.time)];
-        if (b) chart.setCrosshairPosition(b.c, b.d, candle);
-      } else if (chart) {
-        chart.clearCrosshairPosition();
-      }
-    });
-  }
-
-  /** 副图数据加载：key 为指数 key；渲染聚合周期 + MA5/20 */
-  async function loadSub(key) {
-    if (!subChart) return;
-    const seq = ++subSeq;
-    const it = insts.find((x) => x.key === key);
-    $('sub-title').textContent = `${it ? it.name : key} · ${key} 加载中…`;
-    try {
-      const url = cfg.mode === 'market'
-        ? `/api/market/kline?code=${encodeURIComponent(key)}&freq=D&adj=${adjMode}`
-        : '/api/index/kline?key=' + encodeURIComponent(key);
-      const d = await fetch(url).then((r) => r.json());
-      if (seq !== subSeq) return;        // 期间副图标的又被改选
-      if (d.error) throw new Error(d.error);
-      subRaw = d.bars.map((b) => ({ d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
-      renderSub();
-    } catch (e) {
-      if (seq === subSeq) $('sub-title').textContent = `${it ? it.name : key} 加载失败：${e.message}`;
-    }
-  }
-
-  function renderSub() {
-    if (!subChart || !subRaw.length) return;
-    subBars = window.Ind.aggregate(subRaw, subPeriod);
-    subCandle.setData(subBars.map((b) => ({ time: b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
-    const closes = subBars.map((b) => b.c);
-    for (const p of [5, 20]) {
-      const arr = window.Ind.sma(closes, p);
-      subMA[p].setData(arr.map((v, i) => (v == null ? null : { time: subBars[i].d, value: v })).filter(Boolean));
-    }
-    const it = insts.find((x) => x.key === (subKey || curKey));
-    const pn = { D: '日K', W: '周K', M: '月K', Y: '年K' }[subPeriod];
-    $('sub-title').textContent = `${it ? it.name : (subKey || curKey)}（${pn} ${subBars.length} 根）`;
-    syncSubRange(true);
-  }
-
-  /** 日期在 bars（.d 升序）里的最近(≤)索引 */
-  function _nearestIdx(bs, d) {
-    let lo = 0, hi = bs.length - 1, ans = 0;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (bs[mid].d <= d) { ans = mid; lo = mid + 1; } else hi = mid - 1;
-    }
-    return ans;
-  }
-
-  /** 主图可视范围 → 副图（按日期映射到副图周期聚合索引） */
-  function syncSubRange(force = false) {
-    if (!syncOn || !subChart || !subBars.length || !rawBars.length) return;
-    if (syncingVR && !force) return;
-    const vr = chart.timeScale().getVisibleLogicalRange();
-    if (!vr) return;
-    const clamp = (i) => Math.max(0, Math.min(rawBars.length - 1, i));
-    const d0 = rawBars[clamp(Math.round(vr.from))].d;
-    const d1 = rawBars[clamp(Math.round(vr.to))].d;
-    const j0 = _nearestIdx(subBars, d0);
-    const j1 = _nearestIdx(subBars, d1);
-    if (j1 <= j0) return;
-    syncingVR = true;
-    try {
-      subChart.timeScale().setVisibleLogicalRange({ from: j0, to: j1 + 1 });
-    } finally {
-      requestAnimationFrame(() => { syncingVR = false; });
-    }
-  }
-
-  /** 主图十字光标 → 副图 */
-  function crosshairToSub(param) {
-    if (!syncOn || !subChart || !subCandle || !subBars.length) return;
-    if (param.time) {
-      const b = subBars.find((x) => x.d === param.time) || subBars[_nearestIdx(subBars, param.time)];
-      if (b) { subChart.setCrosshairPosition(b.c, b.d, subCandle); return; }
-    }
-    subChart.clearCrosshairPosition();
-  }
-
-  function applySync(on) {
-    syncOn = on;
-    localStorage.setItem(lsKey('sync'), on ? '1' : '0');
-    $('sync').classList.toggle('on', on);
-    root.querySelector('.view-main').classList.toggle('sub-on', on);
-    $('sub-wrap').classList.toggle('hidden', !on);
-    if (on) {
-      if (!subChart) buildSubChart();
-      loadSub(subKey || curKey);
-      root.querySelectorAll('[data-subp]').forEach((b) => {
-        b.classList.toggle('on', b.dataset.subp === subPeriod);
-      });
-    } else if (subChart) {
-      subChart.remove();
-      subChart = null;
     }
   }
 
@@ -881,18 +817,23 @@ window.createBoard = function createBoard(cfg) {
   }
   function applyTpl(t) {
     if (t.period) {
-      const wasMin = MINUTE_PERIODS.includes(period);
+      const wasPeriod = period;
       period = t.period;
       localStorage.setItem(lsKey('period'), period);
       root.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x.dataset.period === period));
+      // 分钟周期之间（5m↔30m）也要重取数，日线系才本地聚合
+      if (cfg.mode === 'market' &&
+          (MINUTE_PERIODS.includes(period) || MINUTE_PERIODS.includes(wasPeriod))) {
+        Object.assign(toggles, t.toggles || {});
+        applyToggles();
+        if (curKey) select(curKey);
+        return;
+      }
     }
     Object.assign(toggles, t.toggles || {});
     applyToggles();
-    if (cfg.mode === 'market' && MINUTE_PERIODS.includes(period) !== wasMin) {
-      if (curKey) select(curKey);
-      return;
-    }
     renderAll();
+    refreshLive();
   }
 
   /* ---------------- 初始化 ---------------- */
@@ -900,16 +841,18 @@ window.createBoard = function createBoard(cfg) {
     root.querySelectorAll('[data-period]').forEach((b) => {
       b.classList.toggle('on', b.dataset.period === period);
       b.onclick = () => {
-        const wasMin = MINUTE_PERIODS.includes(period);
+        const wasPeriod = period;
         period = b.dataset.period;
         localStorage.setItem(lsKey('period'), period);
         root.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x === b));
-        // 分钟⇆日线数据形态不同：重取数；日线系周期本地聚合即可
-        if (cfg.mode === 'market' && MINUTE_PERIODS.includes(period) !== wasMin) {
+        // 分钟周期（含 5m↔30m 互切）数据不同，需重取；日线系周期本地聚合即可
+        if (cfg.mode === 'market' &&
+            (MINUTE_PERIODS.includes(period) || MINUTE_PERIODS.includes(wasPeriod))) {
           if (curKey) select(curKey);
           return;
         }
         renderAll();
+        refreshLive();                       // 切周期后补当天实时 bar
       };
     });
     // 行情板：复权切换（前复权锚定最新 / 不复权）
@@ -943,22 +886,6 @@ window.createBoard = function createBoard(cfg) {
     $('clear-draw').onclick = () => { overlay.clearAll(); saveLines(); };
     if ($('refresh')) $('refresh').onclick = refreshData;
     $('search').oninput = renderList;
-
-    // 联动副图
-    $('sync').onclick = () => applySync(!syncOn);
-    root.querySelectorAll('[data-subp]').forEach((b) => {
-      b.onclick = () => {
-        subPeriod = b.dataset.subp;
-        localStorage.setItem(lsKey('subperiod'), subPeriod);
-        root.querySelectorAll('[data-subp]').forEach((x) => x.classList.toggle('on', x === b));
-        renderSub();
-      };
-    });
-    const subSel = $('sub-key');
-    subSel.onchange = () => {
-      subKey = subSel.value;
-      if (syncOn) loadSub(subKey || curKey);
-    };
 
     // 图表模板
     refreshTplSel();
@@ -997,27 +924,28 @@ window.createBoard = function createBoard(cfg) {
     });
   }
 
-  /** 进入本板（由 bzNav 调用）：首进建图/加载列表/恢复联动 */
+  /** 进入本板（由 bzNav 调用）：首进建图/加载列表 */
   function enter() {
     if (!chart) buildChart();            // 首次进入且容器可见时建图
     if (!insts.length || cfg.mode === 'market') loadList()   // 行情板每次进入都刷新自选
       .then(() => { if (!curKey && insts.length) select(cfg.mode === 'market' ? insts[0].key : 'sh000300'); })
       .catch((e) => { $('title').textContent = `列表加载失败：${e.message}`; });
-    if (syncOn && !subChart) applySync(true);   // 恢复上次的联动状态
     if (cfg.mode === 'market') refreshQuotes();
+    startLive();                                // 盘中实时：只轮询当前主图
   }
 
   function init() {
     if (inited) return;
     inited = true;
     bind();
-    if (cfg.mode === 'market') {
-      setInterval(refreshQuotes, 60 * 1000);
-      document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshQuotes(); });
-    }
-    // 联动按钮初始高亮（进入看板前也保持记忆状态）
-    $('sync').classList.toggle('on', syncOn);
-
+    if (cfg.mode === 'market') setInterval(refreshQuotes, 60 * 1000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        if (cfg.mode === 'market') refreshQuotes();
+        refreshLive();
+        startLive();                       // 回前台恢复 20s 节奏
+      }
+    });
     // 主题切换：重建图表（配色/画线 canvas 跟随新主题）
     window.BzTheme.onChange(() => {
       if (!inited) return;
@@ -1025,7 +953,6 @@ window.createBoard = function createBoard(cfg) {
         buildChart();
         overlay.setLines(loadLines());
         if (rawBars.length) renderAll();
-        if (syncOn && subChart) { buildSubChart(); renderSub(); }   // 副图随主题重建
       }
     });
   }

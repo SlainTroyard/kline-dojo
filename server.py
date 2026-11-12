@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 import bz_data  # noqa: E402
 import bz_index  # noqa: E402
+import bz_live  # noqa: E402
 import bz_quote  # noqa: E402
 import bz_session  # noqa: E402
 
@@ -419,6 +420,26 @@ class Handler(BaseHTTPRequestHandler):
                  None if r.adj_factor != r.adj_factor else float(r.adj_factor)]
                 for r in df.itertuples()]
             return self._json({"code": code, "freq": freq, "bars": bars})
+        if path == "/api/market/live":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            code = bz_data.normalize_code((q.get("code") or [""])[0]) or ""
+            freq = (q.get("freq") or ["D"])[0]
+            if not code:
+                return self._json({"error": "未知代码"}, 404)
+            sym = bz_quote._prefix(code)          # 已含市场前缀（sh600519）
+            if freq in ("5m", "30m"):
+                return self._json(bz_live.minute_bars(sym, int(freq[:-1])))
+            return self._json(bz_live.daily_bar(sym, False))
+        if path == "/api/index/live":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            key = (q.get("key") or [""])[0]
+            if key not in bz_index.BY_KEY:
+                return self._json({"error": f"未知指数 {key}"}, 404)
+            if not key.startswith(("sh", "sz")):
+                return self._json({"error": "海外指数暂不支持盘中实时"}, 404)
+            return self._json(bz_live.daily_bar(key, True))
         if path == "/api/market/quotes":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
