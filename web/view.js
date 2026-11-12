@@ -457,13 +457,24 @@ window.createBoard = function createBoard(cfg) {
     const box = $('list');
     box.innerHTML = '';
     if (cfg.mode === 'market') {
-      // 自选 + 搜索结果（/api/search 添加到自选）
-      const mk = (it, extra) => {
+      // 自选 + 搜索结果（/api/search 添加到自选）；自选行悬停出现 ✕ 可移除
+      const mk = (it, extra, onDel) => {
         const el = document.createElement('div');
         el.className = 'list-item' + (it.key === curKey ? ' active' : '');
         el.dataset.key = it.key;
-        el.innerHTML = `<span class="n">${it.name}</span><span class="d">${extra || ''}</span>`;
-        el.onclick = () => { if (extra === '＋') addToWatchlist(it); else select(it.key); };
+        el.innerHTML = `<span class="n">${it.name}</span><span class="d">${extra || ''}</span>` +
+          (onDel ? '<span class="rm" title="从自选移除">✕</span>' : '');
+        el.onclick = () => {
+          if (extra === '＋') addToWatchlist(it);
+          else if (extra === '✓') removeFromWatchlist(it.key);   // 搜索命中已在自选：点击移出
+          else select(it.key);
+        };
+        if (onDel) {
+          el.querySelector('.rm').onclick = (e) => {
+            e.stopPropagation();
+            removeFromWatchlist(it.key);
+          };
+        }
         box.appendChild(el);
       };
       if (q) {
@@ -478,7 +489,7 @@ window.createBoard = function createBoard(cfg) {
         return;
       }
       if (!insts.length) box.innerHTML = '<div class="list-group">自选为空：搜索代码/名称添加</div>';
-      for (const it of insts) mk(it);
+      for (const it of insts) mk(it, it.key, true);   // 副文本显示代码 + 悬停 ✕
       return;
     }
     for (const g of ['A股', '海外']) {
@@ -501,6 +512,37 @@ window.createBoard = function createBoard(cfg) {
   }
 
   let watchlist = [];
+  /** 自选移除：同步 localStorage；移除的是当前标的则切到下一个，空则清空图表 */
+  function removeFromWatchlist(code) {
+    watchlist = watchlist.filter((w) => w.code !== code);
+    localStorage.setItem('bz_watchlist', JSON.stringify(watchlist));
+    loadList();
+    if (code === curKey) {
+      if (insts.length) select(insts[0].key);
+      else clearChart();
+    }
+  }
+
+  /** 自选清空后的空图表状态（保留画线设置不动，仅清数据） */
+  function clearChart() {
+    curKey = null;
+    rawBars = [];
+    candle.setData([]);
+    volS.setData([]);
+    for (const m of MA_DEFS) maS[m.p].setData([]);
+    bollBar.setData([]);
+    bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
+    macdS.hist.setData([]); macdS.dif.setData([]); macdS.dea.setData([]);
+    kdjS.k.setData([]); kdjS.d.setData([]); kdjS.j.setData([]);
+    overlay.setBars([]);
+    overlay.setLines([]);
+    overlay.setChan(null);
+    minimap && minimap.setBars([]);
+    chip && chip.setBars([]);
+    $('legend').textContent = '';
+    $('title').textContent = '自选为空：搜索代码/名称添加';
+  }
+
   function addToWatchlist(it) {
     const code = it.key;
     if (watchlist.some((w) => w.code === code)) return;
