@@ -14,6 +14,10 @@
 
 date_from/date_to 语义（训练期）：训练推进从 date_from 起的首个交易日开始，
 到 date_to 止（空 = 数据末尾）；前置可见历史自动从 date_from 往前取 history 根。
+
+history=0 表示「全部」：可见历史 = 训练起点之前的全部 bars（从上市/指数起点起）。
+随机窗口下年份/上市年限/断档/涨跌停完整等过滤均锚定**训练起点**（远古历史里的
+长停牌、1996-12 前无涨跌停制度不再剔除候选）。
 """
 from __future__ import annotations
 
@@ -28,7 +32,7 @@ import bz_data
 import bz_index
 
 DEFAULTS = {
-    "history": 120,        # 前置可见历史根数
+    "history": 120,        # 前置可见历史根数；0 = 全部（训练前所有 bars）
     "forward": 120,        # 训练推进根数（随机窗口用；定窗时由日期区间决定）
     "min_list_years": 1.0, # 窗口起点前须上市年数（随机窗口用）
     "exclude_st": True,
@@ -78,7 +82,8 @@ def _clamp(v, lo, hi):
 def normalize_params(raw: dict) -> dict:
     p = dict(DEFAULTS)
     p.update({k: v for k, v in (raw or {}).items() if k in p and v is not None and v != ""})
-    p["history"] = int(_clamp(p["history"], 40, 250))
+    h = int(p["history"])
+    p["history"] = 0 if h <= 0 else int(_clamp(h, 40, 250))   # 0=全部
     p["forward"] = int(_clamp(p["forward"], 40, 250))
     p["min_list_years"] = float(_clamp(p["min_list_years"], 0.0, 20.0))
     p["exclude_st"] = bool(p["exclude_st"])
@@ -123,41 +128,59 @@ def normalize_params(raw: dict) -> dict:
 
 def _feasible_ends(df: pd.DataFrame, p: dict, code: str, need_limit: bool,
                    require_limits: bool) -> list[int]:
-    """枚举合法窗口终点 e（bar 下标）。窗口 = [e-W+1, e]，W = history+forward。
+    """枚举合法窗口终点 e（bar 下标）。窗口 = [e-W+1, e]，W = history+forward；
+    history=0（全部）时窗口 = [0, e]，锚点（年份/上市年限/断档/涨跌停完整）取训练期。
 
     全程用 numpy 按位置索引，避免 pandas 按 index 对齐错位。
-    require_limits: 个股要求窗口内涨跌停价完整（个别 bar 缺失的窗口直接剔除）。
+    require_limits: 个股要求涨跌停价完整（个别 bar 缺失的窗口直接剔除；
+    全史模式下只要求训练期完整——1996-12 前无涨跌停制度，远古历史天然缺失）。
     """
-    W = p["history"] + p["forward"]
     n = len(df)
-    if n < W:
-        return []
     dates = df["date"].reset_index(drop=True)
-    s_idx = np.arange(n - W + 1)              # 每个窗口的起点
-    e_idx = s_idx + W - 1                     # 每个窗口的终点
+    fwd = p["forward"]
 
-    # 窗口起始年份 + 上市年限
-    year0 = dates.dt.year.to_numpy()[s_idx]
+    if p["history"] == 0:
+        # 全史模式：s 恒为 0，i0 = e-fwd+1 为训练第一根
+        lo = MIN_HIST + fwd - 1              # 训练前至少 MIN_HIST 根历史
+        if n <= lo:
+            return []
+        e_idx = np.arange(lo, n)
+        i0_idx = e_idx - fwd + 1
+        anchor = i0_idx                       # 年份/上市年限锚定训练起点
+        gap_win, lim_win = fwd - 1, fwd       # 断档/涨跌停只查训练期
+    else:
+        W = p["history"] + fwd
+        if n < W:
+            return []
+        s_idx = np.arange(n - W + 1)          # 每个窗口的起点
+        e_idx = s_idx + W - 1                 # 每个窗口的终点
+        i0_idx = s_idx + p["history"]
+        anchor = s_idx
+        gap_win, lim_win = W - 1, W
+
+    # 锚点年份 + 上市年限
+    year0 = dates.dt.year.to_numpy()[anchor]
     ok = (year0 >= p["year_from"]) & (year0 <= p["year_to"])
     ld = bz_data.list_date(code)
     if ld is not None:
-        ok &= (dates.to_numpy()[s_idx] >= np.datetime64(ld + timedelta(days=int(p["min_list_years"] * 365.25))))
+        ok &= (dates.to_numpy()[anchor] >= np.datetime64(ld + timedelta(days=int(p["min_list_years"] * 365.25))))
 
-    # 窗口内停牌断档：g[i] = date[i]-date[i-1]，(s, e] 内最大断档 ≤ MAX_GAP_DAYS
+    # 停牌断档：g[i] = date[i]-date[i-1]，锚点后 span 内最大断档 ≤ MAX_GAP_DAYS
+    # （全史模式只查训练期——远古长停牌不剔除候选，双盲下历史断档无害）
     g = dates.diff().dt.days.to_numpy()
-    roll = pd.Series(g).rolling(W - 1).max().to_numpy()   # roll[e] = max g[s+1..e]
+    roll = pd.Series(g).rolling(gap_win).max().to_numpy()
     r = roll[e_idx]
     ok &= np.isnan(r) | (r <= MAX_GAP_DAYS)
 
     up = df["up_limit"].to_numpy(dtype=float)
     if require_limits:
         down = df["down_limit"].to_numpy(dtype=float)
-        n_up = pd.Series(np.isnan(up)).rolling(W).sum().to_numpy()     # 窗口 [s,e] 内 NaN 数
-        n_dn = pd.Series(np.isnan(down)).rolling(W).sum().to_numpy()
+        n_up = pd.Series(np.isnan(up)).rolling(lim_win).sum().to_numpy()   # 锚点起 span 根内 NaN 数
+        n_dn = pd.Series(np.isnan(down)).rolling(lim_win).sum().to_numpy()
         ok &= (n_up[e_idx] == 0) & (n_dn[e_idx] == 0)
 
     if need_limit:
-        h_idx = e_idx - p["forward"]          # 最后一根可见历史 bar = 涨停日
+        h_idx = e_idx - fwd                   # 最后一根可见历史 bar = 涨停日
         close = df["close"].to_numpy(dtype=float)
         hit = (close >= up * LIMIT_TOL) & ~np.isnan(up)
         ok &= hit[h_idx]
@@ -181,7 +204,7 @@ def _fixed_window(df: pd.DataFrame, p: dict, need_limit: bool) -> tuple[int, int
         i1 = len(df) - 1
     if i1 - i0 + 1 < MIN_FWD:
         raise ValueError(f"训练期太短（{i1 - i0 + 1} 根，至少 {MIN_FWD}）")
-    hist = min(p["history"], i0)
+    hist = i0 if p["history"] == 0 else min(p["history"], i0)   # 0=全部
     if hist < MIN_HIST:
         raise ValueError(f"起始日期前只有 {i0} 根历史，不足 {MIN_HIST} 根")
     if need_limit:
@@ -253,14 +276,15 @@ def _random_window_session(category: str, p: dict, df: pd.DataFrame, code: str,
     if not ends:
         raise RuntimeError("没有符合条件的窗口，请放宽过滤条件或调整年份区间")
     for e in ends[:20]:
-        s = e - p["history"] - p["forward"] + 1
-        d0 = df["date"].iloc[s]
+        i0 = e - p["forward"] + 1                       # 训练第一根
+        s = 0 if p["history"] == 0 else i0 - p["history"]
+        d0 = df["date"].iloc[i0 if s == 0 else s]       # 全史模式 ST 锚定训练起点
         if p["exclude_st"] and kind == "stocks" and _st_at(code, d0):
             continue
         bars, dates = _bars_payload(df, s, e)
         if not bars or any(b["h"] < b["l"] for b in bars):
             continue
-        p["_hist"], p["_fwd"] = p["history"], p["forward"]
+        p["_hist"], p["_fwd"] = i0 - s, p["forward"]
         public = _public_payload(category, p, bars, board, kind == "etfs")
         name = bz_data.name_asof(code, df["date"].iloc[e]) or code
         secret = {
@@ -353,15 +377,16 @@ def new_session(category: str, raw_params: dict) -> tuple[dict, dict]:
         ends = _feasible_ends(df, p, code, need_limit, require_limits=(kind == "stocks"))
         rng.shuffle(ends)
         for e in ends[:6]:
-            s = e - p["history"] - p["forward"] + 1
-            d0 = df["date"].iloc[s]
+            i0 = e - p["forward"] + 1                   # 训练第一根
+            s = 0 if p["history"] == 0 else i0 - p["history"]
+            d0 = df["date"].iloc[i0 if s == 0 else s]   # 全史模式 ST 锚定训练起点
             if p["exclude_st"] and kind == "stocks" and _st_at(code, d0):
                 continue
             bars, dates = _bars_payload(df, s, e)
             if not bars or any(b["h"] < b["l"] for b in bars):
                 continue
             board = board_of(code, kind)
-            p["_hist"], p["_fwd"] = p["history"], p["forward"]
+            p["_hist"], p["_fwd"] = i0 - s, p["forward"]
             public = _public_payload(category, p, bars, board, kind == "etfs")
             name = bz_data.name_asof(code, df["date"].iloc[e]) or code
             secret = {
@@ -417,9 +442,10 @@ def _new_index_session(p: dict) -> tuple[dict, dict]:
             raise RuntimeError("该指数在指定年份区间没有足够长的窗口")
         rng.shuffle(ends)
         e = ends[0]
-        s = e - p["history"] - p["forward"] + 1
+        i0 = e - p["forward"] + 1
+        s = 0 if p["history"] == 0 else i0 - p["history"]
         bars, dates = _bars_payload(df, s, e)
-        p["_hist"], p["_fwd"] = p["history"], p["forward"]
+        p["_hist"], p["_fwd"] = i0 - s, p["forward"]
 
     public = _public_payload("index", p, bars, board="index", is_etf=False)
     secret = {

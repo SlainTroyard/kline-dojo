@@ -77,7 +77,7 @@
   <h2 class="sec-title">训练参数</h2>
   <div class="params">
     <label>初始资金(元)<input id="p-capital" type="number" step="10000" min="10000" value="100000"></label>
-    <label>可见历史(根)<input id="p-history" type="number" step="10" min="40" max="250" value="120"></label>
+    <label>可见历史(根)<input id="p-history" type="number" step="10" min="0" max="250" value="120" title="0 = 训练前全部历史（从上市/指数起点起）"></label>
     <label>训练推进(根)<input id="p-forward" type="number" step="10" min="40" max="250" value="120"></label>
     <label>起始年份<input id="p-year-from" type="number" min="1993" max="2026" value="2016"></label>
     <label>结束年份<input id="p-year-to" type="number" min="1993" max="2026" value="2025"></label>

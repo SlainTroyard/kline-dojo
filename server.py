@@ -541,6 +541,11 @@ def selftest(n_each: int = 12) -> int:
         ("custom 随机窗", "custom", {"codes": ["510300.SH"]}),
         ("自定义费率", "stock", {"commission_rate": 0.0002, "commission_min": 0, "fill_mode": "next_open",
                                  "year_from": 2018, "year_to": 2020}),
+        # ---- history=0（全部）：可见历史 = 训练起点前所有 bars ----
+        ("全史 stock 随机", "stock", {"history": 0, "year_from": 2018, "year_to": 2021}),
+        ("全史 custom 定窗", "custom", {"codes": ["600519.SH"], "history": 0,
+                                  "date_from": "2020-01-02", "date_to": "2020-12-31"}),
+        ("全史 index 随机", "index", {"history": 0, "year_from": 2015, "year_to": 2018}),
     ]
     for name, cat, params in cases:
         try:
@@ -566,6 +571,24 @@ def selftest(n_each: int = 12) -> int:
                   f"{tag}: 训练首根不在 date_from 起始位置（{ds[pub['history'] - 1]} | {ds[pub['history']]}）")
             if "date_to" in params:
                 check(ds[-1] <= params["date_to"], f"{tag}: 窗口末根 {ds[-1]} 晚于 date_to")
+        if params.get("history") == 0:
+            # 全史：窗口第 0 根 = 该标的数据第 0 根（从上市/指数起点起）；
+            # 训练期外（远古历史）允许长断档与缺涨跌停价
+            import bz_data as _bd, bz_index as _bi
+            if cat == "index":
+                v0 = _bi.load(sec["code"])["date"].iloc[0]
+            else:
+                v0 = _bd.daily("etfs" if cfg["is_etf"] else "stocks", sec["code"])["date"].iloc[0]
+            raw0 = v0.strftime("%Y-%m-%d") if hasattr(v0, "strftime") else str(v0)[:10]
+            check(sec["dates"][0] == raw0,
+                  f"{tag}: 全史应从数据首根起（{sec['dates'][0]} != {raw0}）")
+            i0 = pub["history"]
+            dtr = [dt.date.fromisoformat(x) for x in sec["dates"][i0:]]
+            check(max((b - a).days for a, b in zip(dtr, dtr[1:])) <= 30,
+                  f"{tag}: 训练期内断档 > 30 天")
+            if cat in ("stock", "custom") and not cfg["is_etf"]:
+                check(all(b["up"] is not None for b in bars[i0:]),
+                      f"{tag}: 训练期缺涨跌停价")
         if name.startswith("index"):
             check(cfg["board"] == "index" and sec["board"] == "index", f"{tag}: board 应为 index")
             check(all(b["up"] is None for b in bars), f"{tag}: 指数带涨跌停价")

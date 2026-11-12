@@ -845,7 +845,7 @@ function collectParams() {
   const fill = (document.querySelector('input[name="p-fill"]:checked') || {}).value || 'close';
   return {
     capital: Number($('p-capital').value) || 100000,
-    history: Number($('p-history').value) || 120,
+    history: (() => { const raw = $('p-history').value; const v = Number(raw); return raw === '' || !Number.isFinite(v) ? 120 : Math.max(0, Math.floor(v)); })(),   // 0=全部（训练前所有 bars）
     forward: Number($('p-forward').value) || 120,
     year_from: Number($('p-year-from').value) || 2016,
     year_to: Number($('p-year-to').value) || 2025,
