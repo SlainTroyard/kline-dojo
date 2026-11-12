@@ -90,7 +90,7 @@
   <div class="params dates">
     <label>训练起始日<input id="p-date-from" type="date"></label>
     <label>训练结束日<input id="p-date-to" type="date"></label>
-      <span class="mini-tip-inline">训练起始日留空 = 随机抽窗；填了起始日则改用定窗：该区间为<b>训练期</b>，训练推进(根)不再生效，结束日留空则到数据末尾；前置历史仍由「可见历史」决定</span>
+    <span class="mini-tip-inline">训练起始日留空 = 随机抽窗；填了起始日则改用定窗：该区间为<b>训练期</b>，训练推进(根)不再生效，结束日留空则到数据末尾；前置历史仍由「可见历史」决定</span>
   </div>
 
   <details class="adv">
@@ -144,6 +144,7 @@
       <button data-tt="kdj" class="tg-btn">KDJ</button>
       <button data-tt="vol" class="tg-btn on">VOL</button>
       <button data-tt="chip" class="tg-btn" title="筹码峰：右侧按价格分布成交量（红=获利盘 蓝=套牢盘，黄=峰顶）">筹码</button>
+      <span class="tsep"></span>
       <button data-tt="chan" class="tg-btn" title="缠论笔+中枢">缠论</button>
       <button data-tt="duan" class="tg-btn" title="缠论线段（实验性：极值破坏法，未做特征序列，仅供目视参考）">段</button>
       <button data-tt="bei" class="tg-btn" title="背驰：同向相邻笔 MACD 柱面积比较，价创新高/新低而面积收缩">背</button>
@@ -155,12 +156,15 @@
       <button data-tdraw="fib" class="tg-btn" title="两点画斐波那契回撤（低→高或高→低，磁吸 OHLC）">斐波</button>
       <button data-tdraw="channel" class="tg-btn" title="三点画平行通道：基线两点 + 第三点定宽度">通道</button>
       <button data-tdraw="rect" class="tg-btn" title="两点画矩形区域">矩形</button>
-      <button data-tdraw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
-      <button data-tdraw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+      <span class="tsep"></span>
       <button data-tdraw="drect" class="tg-btn" title="按住拖动画矩形（涂鸦式框选，松开完成）">▭ 拖框</button>
       <button data-tdraw="pen" class="tg-btn" title="按住拖动自由涂鸦">✎ 涂鸦</button>
+      <button data-tdraw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
+      <span class="tsep"></span>
       <button data-tdraw="select" class="tg-btn" title="点选已有画线：改颜色/粗细/虚实或删除">↖ 选择</button>
       <span class="draw-style-wrap"><button id="train-draw-style" class="tg-btn" title="画线样式：作用于选中的线，否则作为新线默认">🎨</button><div id="train-draw-style-pop" class="draw-style-pop hidden"></div></span>
+      <button data-tdraw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+      <span class="tsep"></span>
       <button id="train-undo" class="tg-btn" title="撤销画线（Ctrl+Z）">⤺</button>
       <button id="train-redo" class="tg-btn" title="重做（Ctrl+Y / Ctrl+Shift+Z）">⤻</button>
       <button id="train-clear-draw" class="tg-btn">清空</button>
@@ -206,9 +210,21 @@
   <h2 class="sec-title">训练结算</h2>
   <div class="result-grid">
     <div class="result-stats" id="result-stats"></div>
-    <div class="result-trades">
-      <h3>交易明细</h3>
-      <div class="table-wrap"><table id="trades-table"></table></div>
+    <div class="result-right">
+      <div class="equity-card">
+        <div class="equity-head">
+          <h3>净值曲线 vs 持有不动基准</h3>
+          <span class="equity-legend">
+            <span><i style="background:var(--accent)"></i>账户收益</span>
+            <span><i style="background:var(--dim)"></i>基准持有</span>
+          </span>
+        </div>
+        <canvas id="equity-chart" class="equity-canvas"></canvas>
+      </div>
+      <div class="result-trades">
+        <h3>交易明细</h3>
+        <div class="table-wrap"><table id="trades-table"></table></div>
+      </div>
     </div>
   </div>
   <div id="reveal-block" class="hidden">
@@ -267,6 +283,7 @@
           <button data-tg="kdj" class="tg-btn">KDJ</button>
           <button data-tg="vol" class="tg-btn on">VOL</button>
           <button data-tg="chip" class="tg-btn" title="筹码峰：右侧按价格分布成交量（红=获利盘 蓝=套牢盘，黄=峰顶）">筹码</button>
+          <span class="tsep"></span>
           <button data-tg="chan" class="tg-btn" title="缠论笔+中枢">缠论</button>
           <button data-tg="duan" class="tg-btn" title="缠论线段（实验性：极值破坏法，未做特征序列，仅供目视参考）">段</button>
           <button data-tg="bei" class="tg-btn" title="背驰：同向相邻笔 MACD 柱面积比较，价创新高/新低而面积收缩">背</button>
@@ -278,12 +295,15 @@
           <button data-draw="fib" class="tg-btn" title="两点画斐波那契回撤（低→高或高→低，磁吸 OHLC）">斐波</button>
           <button data-draw="channel" class="tg-btn" title="三点画平行通道：基线两点 + 第三点定宽度">通道</button>
           <button data-draw="rect" class="tg-btn" title="两点画矩形区域">矩形</button>
-          <button data-draw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
-          <button data-draw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+          <span class="tsep"></span>
           <button data-draw="drect" class="tg-btn" title="按住拖动画矩形（涂鸦式框选，松开完成）">▭ 拖框</button>
           <button data-draw="pen" class="tg-btn" title="按住拖动自由涂鸦">✎ 涂鸦</button>
+          <button data-draw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
+          <span class="tsep"></span>
           <button data-draw="select" class="tg-btn" title="点选已有画线：改颜色/粗细/虚实或删除">↖ 选择</button>
           <span class="draw-style-wrap"><button id="view-draw-style" class="tg-btn" title="画线样式：作用于选中的线，否则作为新线默认">🎨</button><div id="view-draw-style-pop" class="draw-style-pop hidden"></div></span>
+          <button data-draw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+          <span class="tsep"></span>
           <button id="view-undo" class="tg-btn" title="撤销画线（Ctrl+Z）">⤺</button>
           <button id="view-redo" class="tg-btn" title="重做（Ctrl+Y / Ctrl+Shift+Z）">⤻</button>
           <button id="view-clear-draw" class="tg-btn">清空</button>
@@ -328,12 +348,15 @@
           <button data-draw="fib" class="tg-btn" title="两点画斐波那契回撤（磁吸 OHLC）">斐波</button>
           <button data-draw="channel" class="tg-btn" title="三点画平行通道">通道</button>
           <button data-draw="rect" class="tg-btn" title="两点画矩形区域">矩形</button>
-          <button data-draw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
-          <button data-draw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+          <span class="tsep"></span>
           <button data-draw="drect" class="tg-btn" title="按住拖动画矩形（涂鸦式框选，松开完成）">▭ 拖框</button>
           <button data-draw="pen" class="tg-btn" title="按住拖动自由涂鸦">✎ 涂鸦</button>
+          <button data-draw="text" class="tg-btn" title="点击位置加文字标注">文字</button>
+          <span class="tsep"></span>
           <button data-draw="select" class="tg-btn" title="点选已有画线：改颜色/粗细/虚实或删除">↖ 选择</button>
           <span class="draw-style-wrap"><button id="mkt-draw-style" class="tg-btn" title="画线样式：作用于选中的线，否则作为新线默认">🎨</button><div id="mkt-draw-style-pop" class="draw-style-pop hidden"></div></span>
+          <button data-draw="del" class="tg-btn" title="点击线上删除">✕ 删除线</button>
+          <span class="tsep"></span>
           <button id="mkt-undo" class="tg-btn" title="撤销画线（Ctrl+Z）">⤺</button>
           <button id="mkt-redo" class="tg-btn" title="重做（Ctrl+Y）">⤻</button>
           <button id="mkt-clear-draw" class="tg-btn">清空</button>
@@ -406,6 +429,7 @@
   <div class="modal-box replay-box">
     <div id="replay-identity" class="replay-identity"></div>
     <div class="chart-wrap replay-chart-wrap"><div id="replay-chart2"></div></div>
+    <canvas id="replay-eq-chart" class="equity-canvas" style="height:82px;margin-top:8px" title="净值走势（主题色） vs 持有不动基准（灰线）"></canvas>
     <div id="replay-summary" class="replay-summary"></div>
     <div id="replay-trades" class="replay-trades"></div>
     <div class="modal-btns"><button id="replay-close" class="primary">关闭</button></div>

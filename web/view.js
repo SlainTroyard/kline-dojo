@@ -1,50 +1,726 @@
-/* 指数看板（K线道场）：选指 / 日周月年 / 指标开关 / 画线 / 缠论 / 增量刷新 */
+/* 图表工作台公共套件 (BzChartKit) + 指数/行情看板引擎 (createBoard)
+ *
+ * 架构说明：
+ * 1. BzChartKit 统一封装训练页、指数看板、行情板共用的：
+ *    - 多面板图表创建与可视区间/十字光标联动（主图 + BOLL/VOL/MACD/KDJ 四副图）
+ *    - O(1) 指标计算缓存（消除十字光标移动时的全量重算性能瓶颈）
+ *    - 顶部等宽数字图例渲染（updateLegend）
+ *    - 均线勾选菜单（buildMaMenu）、画线样式浮层及选中态回显（buildDrawStylePop）
+ *    - 图表模板 CRUD（bindTemplates）与结算净值对比曲线绘制（drawEquityCurve）
+ * 2. createBoard 基于 BzChartKit 实例化「指数看板 (View)」与「行情看板 (Mkt)」。
+ */
 'use strict';
+
+window.BzChartKit = (() => {
+  const AXIS_W = 62;
+  const DRAW_COLORS = ['#f0b90b', '#e0483e', '#4a90e2', '#1fa06b', '#c77dff', '#e6ebf4'];
+
+  function loadToggles(key, defaults) {
+    const base = Object.assign(
+      { maSel: null, boll: false, macd: true, kdj: false, vol: true, chip: false, chan: false, duan: false, bei: false },
+      defaults || {}
+    );
+    let obj = base;
+    try { obj = Object.assign(base, JSON.parse(localStorage.getItem(key) || '{}')); }
+    catch { obj = base; }
+    if (!Array.isArray(obj.maSel)) {
+      obj.maSel = obj.ma === false ? [] : window.BzTheme.MA_DEFAULT.slice();
+    }
+    delete obj.ma;
+    return obj;
+  }
+
+  const fmtVol = (v) => v >= 1e8 ? (v / 1e8).toFixed(2) + '亿'
+    : v >= 1e4 ? (v / 1e4).toFixed(2) + '万' : String(Math.round(v));
+
+  /** 构建 MA 周期勾选浮层（训练/指数/行情三处共用） */
+  function buildMaMenu({ btnEl, menuEl, getMaSel, onChange }) {
+    if (!menuEl || !btnEl) return { sync() {} };
+    const MA_DEFS = window.BzTheme.MA_DEFS;
+    menuEl.textContent = '';
+    for (const m of MA_DEFS) {
+      const lab = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.ma = String(m.p);
+      cb.checked = getMaSel().includes(m.p);
+      cb.onchange = () => {
+        const cur = getMaSel();
+        const next = cb.checked
+          ? [...new Set([...cur, m.p])].sort((a, b) => a - b)
+          : cur.filter((p) => p !== m.p);
+        onChange(next);
+      };
+      const dot = document.createElement('i');
+      dot.dataset.ma = String(m.p);
+      dot.style.background = window.BzTheme.maColor(m.p, m.color);
+      lab.append(cb, dot, document.createTextNode(`MA${m.p}`));
+      menuEl.appendChild(lab);
+    }
+    btnEl.onclick = (e) => { e.stopPropagation(); menuEl.classList.toggle('hidden'); };
+    if (!menuEl._boundGlobal) {
+      menuEl._boundGlobal = true;
+      document.addEventListener('click', (e) => {
+        if (!menuEl.classList.contains('hidden') && !menuEl.contains(e.target) && e.target !== btnEl) {
+          menuEl.classList.add('hidden');
+        }
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') menuEl.classList.add('hidden');
+      });
+    }
+    return {
+      sync() {
+        const on = new Set(getMaSel());
+        btnEl.classList.toggle('on', on.size > 0);
+        menuEl.querySelectorAll('input[data-ma]').forEach((cb) => {
+          cb.checked = on.has(Number(cb.dataset.ma));
+        });
+        menuEl.querySelectorAll('i[data-ma]').forEach((dot) => {
+          const m = MA_DEFS.find((x) => String(x.p) === dot.dataset.ma);
+          if (m) dot.style.background = window.BzTheme.maColor(m.p, m.color);
+        });
+      },
+    };
+  }
+
+  /** 构建画线样式浮层（支持当前颜色/粗细/虚实高亮回显） */
+  function buildDrawStylePop({ btnEl, popEl, getOverlay }) {
+    if (!popEl || !btnEl) return { sync() {} };
+    popEl.innerHTML =
+      `<div class="ds-row"><span class="ds-lab">颜色</span><span class="ds-colors">` +
+      DRAW_COLORS.map((c) => `<button class="ds-c" data-color="${c}" style="background:${c}" title="${c}"></button>`).join('') +
+      `</span></div>` +
+      `<div class="ds-row"><span class="ds-lab">粗细</span>` +
+      `<button class="ds-b" data-width="1">细</button>` +
+      `<button class="ds-b" data-width="1.6">中</button>` +
+      `<button class="ds-b" data-width="2.6">粗</button></div>` +
+      `<div class="ds-row"><span class="ds-lab">线型</span>` +
+      `<button class="ds-b" data-dash="0">实线</button>` +
+      `<button class="ds-b" data-dash="1">虚线</button></div>` +
+      `<div class="ds-row"><button class="ds-del" data-del="1">删除选中线</button></div>`;
+
+    const sync = (st) => {
+      const ov = getOverlay();
+      const s = st || (ov && ov.getActiveStyle ? ov.getActiveStyle() : null);
+      if (!s) return;
+      const curCol = String(s.color || '').toLowerCase();
+      popEl.querySelectorAll('.ds-c').forEach((b) => {
+        b.classList.toggle('active', b.dataset.color.toLowerCase() === curCol);
+      });
+      popEl.querySelectorAll('.ds-b[data-width]').forEach((b) => {
+        b.classList.toggle('active', Math.abs(Number(b.dataset.width) - Number(s.width || 1.6)) < 0.15);
+      });
+      popEl.querySelectorAll('.ds-b[data-dash]').forEach((b) => {
+        b.classList.toggle('active', (b.dataset.dash === '1') === !!s.dash);
+      });
+      const delBtn = popEl.querySelector('.ds-del');
+      if (delBtn) delBtn.disabled = !s.hasSelected;
+    };
+
+    popEl.onclick = (e) => {
+      const t = e.target.closest('button');
+      const ov = getOverlay();
+      if (!t || !ov) return;
+      e.stopPropagation();
+      if (t.dataset.color) ov.setStyle({ color: t.dataset.color });
+      else if (t.dataset.width) ov.setStyle({ width: Number(t.dataset.width) });
+      else if (t.dataset.dash) ov.setStyle({ dash: t.dataset.dash === '1' });
+      else if (t.dataset.del) ov.deleteSelected();
+      sync();
+    };
+    btnEl.onclick = (e) => {
+      e.stopPropagation();
+      popEl.classList.toggle('hidden');
+      if (!popEl.classList.contains('hidden')) sync();
+    };
+    if (!popEl._boundGlobal) {
+      popEl._boundGlobal = true;
+      document.addEventListener('click', (e) => {
+        if (!popEl.classList.contains('hidden') && !popEl.contains(e.target) && e.target !== btnEl) {
+          popEl.classList.add('hidden');
+        }
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') popEl.classList.add('hidden');
+      });
+    }
+    return { sync };
+  }
+
+  /** 绑定图表模板下拉与保存/删除按钮 */
+  function bindTemplates({ storageKey, selEl, saveBtn, delBtn, getState, onApply }) {
+    if (!selEl || !saveBtn || !delBtn) return;
+    const loadMap = () => {
+      try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); }
+      catch { return {}; }
+    };
+    const refreshSel = () => {
+      selEl.textContent = '';
+      for (const k of ['', ...Object.keys(loadMap())]) {
+        const o = document.createElement('option');
+        o.value = k;
+        o.textContent = k || '模板…';
+        selEl.appendChild(o);
+      }
+    };
+    refreshSel();
+    saveBtn.onclick = () => {
+      window.bzPrompt('模板名称：', '', (name) => {
+        name = (name || '').slice(0, 40);
+        if (!name) return;
+        const m = loadMap();
+        m[name] = getState();
+        localStorage.setItem(storageKey, JSON.stringify(m));
+        refreshSel();
+        selEl.value = name;
+      });
+    };
+    delBtn.onclick = () => {
+      const name = selEl.value;
+      if (!name) return;
+      const m = loadMap();
+      delete m[name];
+      localStorage.setItem(storageKey, JSON.stringify(m));
+      refreshSel();
+    };
+    selEl.onchange = () => {
+      const t = loadMap()[selEl.value];
+      if (t) onApply(t);
+    };
+  }
+
+  /**
+   * 多面板图表工作台：封装主面板 + BOLL/VOL/MACD/KDJ 四副图 + O(1) 指标缓存 + 十字光标与图例联动
+   * @param opts {
+   *   ids: { chart, paneMain, paneBoll, paneVol, paneMacd, paneKdj, bollChart, volChart, macdChart, kdjChart, legend, chip },
+   *   rightOffset?: number,
+   *   blindMode?: boolean,          // 训练页双盲模式：不显示标的名称与日期，主图不回退显示时间轴
+   *   timeOf: (bar) => number|string,
+   *   getTitle?: (bar) => string,   // 图例首段标题（如 "沪深300 2025-01-02"）
+   *   onRangeChange?: (range) => void,
+   *   onOverlayModeChange?: (mode) => void,
+   *   onOverlayChange?: () => void,
+   *   onOverlayStyleChange?: (st) => void,
+   * }
+   */
+  function createWorkbench(opts) {
+    const ids = opts.ids;
+    const rightOffset = opts.rightOffset || 6;
+    const timeOf = opts.timeOf || ((b) => (b.t != null ? b.t : b.d));
+    const MA_DEFS = window.BzTheme.MA_DEFS;
+
+    let chart = null, candle = null;
+    let bollChart = null, volChart = null, macdChart = null, kdjChart = null;
+    let maS = {}, bollS = {}, bollBar = null, volS = null, macdS = {}, kdjS = {};
+    let overlay = null, chip = null;
+    let curBars = [];
+    let curToggles = null;
+    let isMinute = false;
+    let indCache = { timeIdxMap: new Map(), ma: {}, boll: null, macd: null, kdj: null };
+
+    function mkSubPane(elId) {
+      const T = window.BzTheme.colors();
+      return LightweightCharts.createChart(document.getElementById(elId), {
+        layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 10 },
+        grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
+        rightPriceScale: {
+          borderColor: T.line, minimumWidth: AXIS_W, maximumWidth: AXIS_W,
+          scaleMargins: { top: 0.12, bottom: 0.08 },
+        },
+        timeScale: { borderColor: T.line, visible: false, rightOffset },
+        crosshair: { mode: 0 },
+        autoSize: true,
+        handleScroll: false, handleScale: false,
+      });
+    }
+
+    function build() {
+      for (const c of [chart, volChart, bollChart, macdChart, kdjChart]) {
+        if (c) c.remove();
+      }
+      chart = bollChart = volChart = macdChart = kdjChart = null;
+      const T = window.BzTheme.colors();
+
+      chart = LightweightCharts.createChart(document.getElementById(ids.chart), {
+        layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 12 },
+        grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
+        rightPriceScale: {
+          borderColor: T.line, minimumWidth: AXIS_W, maximumWidth: AXIS_W,
+          scaleMargins: { top: 0.08, bottom: 0.05 },
+        },
+        timeScale: { borderColor: T.line, visible: false, rightOffset },
+        crosshair: { mode: 0 },
+        autoSize: true,
+      });
+      candle = chart.addCandlestickSeries({
+        upColor: T.up, downColor: T.down, borderUpColor: T.up, borderDownColor: T.down,
+        wickUpColor: T.up, wickDownColor: T.down,
+      });
+      maS = {};
+      for (const m of MA_DEFS) {
+        maS[m.p] = chart.addLineSeries({
+          color: window.BzTheme.maColor(m.p, m.color), lineWidth: 1,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+      }
+
+      bollChart = mkSubPane(ids.bollChart);
+      bollBar = bollChart.addBarSeries({
+        upColor: T.up, downColor: T.down, thinBars: true,
+        priceLineVisible: false, lastValueVisible: false,
+      });
+      bollS = {
+        mid: bollChart.addLineSeries({ color: T.bollMid, lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+        up: bollChart.addLineSeries({ color: T.bollBand, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+        low: bollChart.addLineSeries({ color: T.bollBand, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      };
+
+      volChart = mkSubPane(ids.volChart);
+      volS = volChart.addHistogramSeries({
+        priceFormat: { type: 'volume' }, color: T.volDown,
+        priceLineVisible: false, lastValueVisible: false,
+      });
+
+      macdChart = mkSubPane(ids.macdChart);
+      macdS = {
+        hist: macdChart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false }),
+        dif: macdChart.addLineSeries({ color: T.up, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+        dea: macdChart.addLineSeries({ color: T.blue, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      };
+
+      kdjChart = mkSubPane(ids.kdjChart);
+      kdjS = {
+        k: kdjChart.addLineSeries({ color: T.kdjK, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+        d: kdjChart.addLineSeries({ color: T.kdjD, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+        j: kdjChart.addLineSeries({ color: T.kdjJ, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      };
+
+      overlay = new window.Overlay(chart, candle, document.getElementById(ids.paneMain), {
+        onModeChange: opts.onOverlayModeChange,
+        onChange: opts.onOverlayChange,
+        onStyleChange: opts.onOverlayStyleChange,
+      });
+      if (!chip && window.ChipProfile && ids.chip) {
+        chip = new window.ChipProfile(document.getElementById(ids.chip));
+      }
+      if (chip) chip.attach(chart, candle);
+
+      let syncingVR = false;
+      chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+        if (opts.onRangeChange) opts.onRangeChange(r);
+        if (r && !syncingVR) {
+          syncingVR = true;
+          for (const c of [bollChart, volChart, macdChart, kdjChart]) {
+            try { c.timeScale().setVisibleLogicalRange(r); } catch { /* ignore empty */ }
+          }
+          syncingVR = false;
+        }
+      });
+      chart.subscribeClick((param) => {
+        if (overlay.handleClick(param) && opts.onOverlayChange) opts.onOverlayChange();
+      });
+      chart.subscribeCrosshairMove((param) => updateLegend(param));
+
+      return { chart, candle, overlay, chip };
+    }
+
+    /** 时间轴归属：挂在最底部的可见副图；若副图全关且非双盲模式，则挂回主图（修复副图全关无时间轴 Bug） */
+    function refreshAxisOwner(toggles, minute = false) {
+      if (!chart) return;
+      isMinute = !!minute;
+      const tg = toggles || curToggles || {};
+      const order = [
+        [bollChart, tg.boll], [volChart, tg.vol],
+        [macdChart, tg.macd], [kdjChart, tg.kdj],
+      ];
+      let owner = null;
+      for (const [c, on] of order) if (on) owner = c;
+      for (const [c] of order) {
+        if (c) c.timeScale().applyOptions({ visible: !opts.blindMode && c === owner, timeVisible: isMinute, secondsVisible: false });
+      }
+      chart.timeScale().applyOptions({
+        visible: !opts.blindMode && owner === null,
+        timeVisible: isMinute,
+        secondsVisible: false,
+      });
+    }
+
+    /** 灌入指标数据并构建 O(1) 指标查询缓存 */
+    function refillIndicators(bars, toggles) {
+      curBars = bars || [];
+      curToggles = toggles || curToggles || {};
+      const tg = curToggles;
+      const closes = curBars.map((b) => b.c);
+      const timeIdxMap = new Map();
+      for (let i = 0; i < curBars.length; i++) timeIdxMap.set(timeOf(curBars[i]), i);
+
+      const line = (arr) => arr.map((v, i) => (v == null ? null : { time: timeOf(curBars[i]), value: v })).filter(Boolean);
+      const on = new Set(tg.maSel || []);
+      const maMap = {};
+      for (const m of MA_DEFS) {
+        if (on.has(m.p) && curBars.length) {
+          const arr = window.Ind.sma(closes, m.p);
+          maMap[m.p] = arr;
+          maS[m.p].setData(line(arr));
+        } else {
+          maS[m.p].setData([]);
+        }
+      }
+
+      let bo = null, mc = null, kj = null;
+      if (tg.boll && curBars.length) {
+        bo = window.Ind.boll(closes);
+        bollBar.setData(curBars.map((b) => ({ time: timeOf(b), open: b.o, high: b.h, low: b.l, close: b.c })));
+        bollS.mid.setData(line(bo.mid));
+        bollS.up.setData(line(bo.up));
+        bollS.low.setData(line(bo.low));
+      } else {
+        bollBar.setData([]);
+        bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
+      }
+
+      if (tg.macd && curBars.length) {
+        const T = window.BzTheme.colors();
+        mc = window.Ind.macd(closes);
+        macdS.hist.setData(mc.hist.map((v, i) => ({
+          time: timeOf(curBars[i]), value: v, color: v >= 0 ? T.macdUp : T.macdDown,
+        })));
+        macdS.dif.setData(mc.dif.map((v, i) => ({ time: timeOf(curBars[i]), value: v })));
+        macdS.dea.setData(mc.dea.map((v, i) => ({ time: timeOf(curBars[i]), value: v })));
+      } else {
+        macdS.hist.setData([]); macdS.dif.setData([]); macdS.dea.setData([]);
+      }
+
+      if (tg.kdj && curBars.length) {
+        kj = window.Ind.kdj(curBars);
+        kdjS.k.setData(kj.k.map((v, i) => ({ time: timeOf(curBars[i]), value: v })));
+        kdjS.d.setData(kj.d.map((v, i) => ({ time: timeOf(curBars[i]), value: v })));
+        kdjS.j.setData(kj.j.map((v, i) => ({ time: timeOf(curBars[i]), value: v })));
+      } else {
+        kdjS.k.setData([]); kdjS.d.setData([]); kdjS.j.setData([]);
+      }
+
+      indCache = { timeIdxMap, ma: maMap, boll: bo, macd: mc, kdj: kj };
+    }
+
+    /** 显隐各面板与均线 series */
+    function applyPaneVisibility(toggles, minute = false) {
+      curToggles = toggles || curToggles || {};
+      const tg = curToggles;
+      const on = new Set(tg.maSel || []);
+      for (const m of MA_DEFS) {
+        if (maS[m.p]) maS[m.p].applyOptions({ visible: on.has(m.p) });
+      }
+      const visPane = (id, flag) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('hidden', !flag);
+      };
+      visPane(ids.paneBoll, tg.boll);
+      visPane(ids.paneVol, tg.vol);
+      visPane(ids.paneMacd, tg.macd);
+      visPane(ids.paneKdj, tg.kdj);
+      refreshAxisOwner(tg, minute);
+      if (chip) chip.setVisible(!!tg.chip);
+    }
+
+    /** O(1) 十字光标图例渲染与副图光标同步（消除 mousemove 全量重算） */
+    function updateLegend(param) {
+      const el = document.getElementById(ids.legend);
+      if (!el) return;
+      if (!curBars.length || !curToggles) { el.textContent = ''; return; }
+      const T = window.BzTheme.colors();
+      const tg = curToggles;
+      let idx = curBars.length - 1;
+      if (param && param.time != null && indCache.timeIdxMap) {
+        const hit = indCache.timeIdxMap.get(param.time);
+        if (hit != null) idx = hit;
+      }
+      const b = curBars[idx];
+      const chg = idx > 0 ? (b.c / curBars[idx - 1].c - 1) * 100 : 0;
+      const sec = (txt, color) => txt ? `<span class="lg" style="color:${color}">${txt}</span>` : '';
+
+      const titlePrefix = opts.getTitle ? opts.getTitle(b) : '';
+      let html =
+        `<span class="lg">` +
+        (titlePrefix ? `<b style="color:${chg >= 0 ? T.up : T.down}">${titlePrefix}</b> ` : '') +
+        `开<b>${b.o.toFixed(2)}</b> 高<b>${b.h.toFixed(2)}</b> 低<b>${b.l.toFixed(2)}</b> 收<b>${b.c.toFixed(2)}</b> ` +
+        `<b style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</b></span>`;
+
+      if (tg.maSel && tg.maSel.length) {
+        const on = new Set(tg.maSel);
+        const maParts = MA_DEFS.filter((m) => on.has(m.p)).map((m) => {
+          const arr = indCache.ma[m.p];
+          const v = arr ? arr[idx] : null;
+          if (v == null) return '';
+          const col = window.BzTheme.maColor(m.p, m.color);
+          return `<span style="color:${col}">MA${m.p}</span> <b>${v.toFixed(1)}</b>`;
+        }).filter(Boolean);
+        if (maParts.length) html += `<span class="lg" style="color:${T.dim}">${maParts.join(' ')}</span>`;
+      }
+
+      const xv = {};
+      if (tg.vol) {
+        xv.vol = b.v;
+        html += sec(`VOL <b>${fmtVol(b.v)}</b>`, b.c >= b.o ? T.up : T.down);
+      }
+      if (tg.macd && indCache.macd) {
+        const mc = indCache.macd;
+        const d = mc.dif[idx], e = mc.dea[idx], h = mc.hist[idx];
+        xv.dif = d;
+        if (d != null && e != null) {
+          html += sec(
+            `MACD <b style="color:${T.up}">${d.toFixed(2)}</b> ` +
+            `<b style="color:${T.blue}">${e.toFixed(2)}</b> ` +
+            `<b style="color:${h >= 0 ? T.up : T.down}">${h.toFixed(2)}</b>`,
+            T.dim
+          );
+        }
+      }
+      if (tg.kdj && indCache.kdj) {
+        const kj = indCache.kdj;
+        xv.k = kj.k[idx];
+        if (xv.k != null) {
+          html += sec(
+            `K <b style="color:${T.kdjK}">${kj.k[idx].toFixed(1)}</b> ` +
+            `D <b style="color:${T.kdjD}">${kj.d[idx].toFixed(1)}</b> ` +
+            `J <b style="color:${T.kdjJ}">${kj.j[idx].toFixed(1)}</b>`,
+            T.dim
+          );
+        }
+      }
+      if (tg.boll && indCache.boll) {
+        const bo = indCache.boll;
+        xv.bollMid = bo.mid[idx];
+        if (xv.bollMid != null) {
+          html += sec(
+            `BOLL <b style="color:${T.bollMid}">${bo.mid[idx].toFixed(2)}</b> ` +
+            `<b style="color:${T.bollBand}">${bo.up[idx].toFixed(2)}</b> ` +
+            `<b style="color:${T.bollBand}">${bo.low[idx].toFixed(2)}</b>`,
+            T.dim
+          );
+        }
+      }
+      el.innerHTML = html;
+
+      // 主面板十字光标 → 各副图面板（BOLL 副图定位到收盘价 b.c）
+      const tk = timeOf(b);
+      const setX = (c, series, v) => {
+        if (!c || !series) return;
+        if (param && param.time != null && v != null) c.setCrosshairPosition(v, tk, series);
+        else c.clearCrosshairPosition();
+      };
+      setX(bollChart, bollBar, xv.bollMid != null ? b.c : null);
+      setX(volChart, volS, tg.vol ? xv.vol : null);
+      setX(macdChart, macdS.dif, xv.dif);
+      setX(kdjChart, kdjS.k, xv.k);
+    }
+
+    /** 灌入完整 bars 数据（K线+成交量+副图指标+缠论+筹码） */
+    function renderBars(bars, toggles, minute = false) {
+      if (!chart) return;
+      const T = window.BzTheme.colors();
+      curBars = bars || [];
+      curToggles = toggles || curToggles || {};
+      candle.setData(curBars.map((b) => ({ time: timeOf(b), open: b.o, high: b.h, low: b.l, close: b.c })));
+      volS.setData(curToggles.vol ? curBars.map((b) => ({
+        time: timeOf(b), value: b.v,
+        color: b.c >= b.o ? T.volUp : T.volDown,
+      })) : []);
+      refreshAxisOwner(curToggles, minute);
+      refillIndicators(curBars, curToggles);
+      if (overlay) {
+        overlay.setBars(curBars);
+        overlay.setChan(window.Ind.chanView(curBars, curToggles));
+      }
+      if (chip) chip.setBars(curBars);
+    }
+
+    function clearAll() {
+      if (!chart) return;
+      curBars = [];
+      indCache = { timeIdxMap: new Map(), ma: {}, boll: null, macd: null, kdj: null };
+      candle.setData([]);
+      volS.setData([]);
+      for (const m of MA_DEFS) maS[m.p].setData([]);
+      bollBar.setData([]);
+      bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
+      macdS.hist.setData([]); macdS.dif.setData([]); macdS.dea.setData([]);
+      kdjS.k.setData([]); kdjS.d.setData([]); kdjS.j.setData([]);
+      if (overlay) {
+        overlay.setBars([]);
+        overlay.setLines([]);
+        overlay.setChan(null);
+      }
+      if (chip) chip.setBars([]);
+      const el = document.getElementById(ids.legend);
+      if (el) el.textContent = '';
+    }
+
+    return {
+      build,
+      renderBars,
+      refillIndicators,
+      applyPaneVisibility,
+      updateLegend,
+      clearAll,
+      get chart() { return chart; },
+      get candle() { return candle; },
+      get overlay() { return overlay; },
+      get chip() { return chip; },
+    };
+  }
+
+  /**
+   * 绘制结算页/复盘页「账户收益率 vs 持有不动基准」对比曲线
+   * @param canvas HTMLCanvasElement
+   * @param eqList [{i, equity}] 或 [[i, equity]]
+   * @param bars   原始 bars（对象 {c} 或数组 [o,h,l,c,v]）
+   * @param histIdx 训练起点前一根下标 (S.history - 1)
+   * @param capital 初始资金
+   */
+  function drawEquityCurve(canvas, eqList, bars, histIdx, capital) {
+    if (!canvas || !eqList || !eqList.length || !bars || !bars.length) return;
+    const box = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.round(box.width) || 520;
+    const h = Math.round(box.height) || 120;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const T = window.BzTheme.colors();
+    const closeAt = (idx) => {
+      const b = bars[Math.max(0, Math.min(bars.length - 1, idx))];
+      return Array.isArray(b) ? b[3] : b.c;
+    };
+    const basePrice = closeAt(histIdx) || 1;
+    const cap = capital || 100000;
+
+    const pts = eqList.map((item) => {
+      const i = Array.isArray(item) ? item[0] : item.i;
+      const eq = Array.isArray(item) ? item[1] : item.equity;
+      const ret = (eq / cap - 1) * 100;
+      const bm = (closeAt(i) / basePrice - 1) * 100;
+      return { i, ret, bm };
+    });
+
+    let lo = 0, hi = 0;
+    for (const p of pts) {
+      if (p.ret < lo) lo = p.ret;
+      if (p.ret > hi) hi = p.ret;
+      if (p.bm < lo) lo = p.bm;
+      if (p.bm > hi) hi = p.bm;
+    }
+    const padPct = Math.max(1.5, (hi - lo) * 0.12);
+    lo -= padPct;
+    hi += padPct;
+    const span = (hi - lo) || 1;
+
+    const padL = 6, padR = 52, padT = 8, padB = 8;
+    const plotW = Math.max(10, w - padL - padR);
+    const plotH = Math.max(10, h - padT - padB);
+    const X = (k) => padL + (pts.length > 1 ? (k / (pts.length - 1)) * plotW : plotW / 2);
+    const Y = (val) => padT + (1 - (val - lo) / span) * plotH;
+
+    // 0% 基准水平虚线
+    const y0 = Y(0);
+    ctx.strokeStyle = T.line;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padL, y0);
+    ctx.lineTo(padL + plotW, y0);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 持有不动基准曲线（虚线或浅色细线）
+    ctx.strokeStyle = T.dim;
+    ctx.lineWidth = 1.3;
+    ctx.globalAlpha = 0.75;
+    ctx.beginPath();
+    pts.forEach((p, k) => {
+      const x = X(k), y = Y(p.bm);
+      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // 账户净值曲线及下方微渐变填充
+    ctx.beginPath();
+    pts.forEach((p, k) => {
+      const x = X(k), y = Y(p.ret);
+      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = T.accent;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    if (pts.length > 1) {
+      ctx.save();
+      ctx.lineTo(X(pts.length - 1), y0);
+      ctx.lineTo(X(0), y0);
+      ctx.closePath();
+      ctx.fillStyle = T.accent;
+      ctx.globalAlpha = 0.10;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 右侧刻度标签（最高 / 0% / 最低 + 终点值）
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const last = pts[pts.length - 1];
+    const fmt = (v) => (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+    ctx.fillStyle = T.dim;
+    ctx.fillText('0.0%', padL + plotW + 5, Math.max(10, Math.min(h - 10, y0)));
+    const yRet = Math.max(10, Math.min(h - 10, Y(last.ret)));
+    ctx.fillStyle = last.ret >= 0 ? T.up : T.down;
+    ctx.fillText(fmt(last.ret), padL + plotW + 5, yRet);
+  }
+
+  return {
+    loadToggles,
+    buildMaMenu,
+    buildDrawStylePop,
+    bindTemplates,
+    createWorkbench,
+    drawEquityCurve,
+  };
+})();
+
+/* ============================================================================
+ * 看板工厂 createBoard：指数看板 (mode='index') 与 行情看板 (mode='market') 共用
+ * ============================================================================ */
 window.createBoard = function createBoard(cfg) {
-  const P = cfg.mode === 'market' ? 'mkt' : 'view';      // DOM id 前缀 / localStorage 命名空间
+  const P = cfg.mode === 'market' ? 'mkt' : 'view';
   const root = document.getElementById(P === 'mkt' ? 'screen-mkt' : 'screen-view');
   const $ = (suf) => document.getElementById(P + '-' + suf);
   const lsKey = (k) => 'bz_' + P + '_' + k;
-  const UP = '#e0483e', DOWN = '#1fa06b';
-  const MA_DEFS = [                       // 可选均线（勾选开关，默认 5/10/20/60）
-    { p: 5, color: '#f0b90b' }, { p: 10, color: '#4a90e2' },
-    { p: 13, color: '#22c1c3' }, { p: 20, color: '#c77dff' },
-    { p: 21, color: '#ff6b9d' }, { p: 40, color: '#9ccc65' },
-    { p: 60, color: '#ff8c42' }, { p: 120, color: '#8892a6' },
-  ];
-  const MA_DEFAULT = [5, 10, 20, 60];
 
   let inited = false;
-  let chart = null, candle = null;
-  let volChart = null, bollChart = null, macdChart = null, kdjChart = null;   // 独立小面板
-  let maS = {}, bollS = {}, bollBar = null, macdS = {}, kdjS = {};
-  let overlay = null;
-  let chip = null;                        // 筹码峰（右侧价格分布直方图）
+  let wb = null;
+  let maMenuCtrl = null, drawStyleCtrl = null;
   let insts = [];
   let curKey = null, curName = '';
-  let rawBars = [];                       // 全量日线（分钟模式下为分钟 bar）
+  let rawBars = [];
   let period = localStorage.getItem(lsKey('period')) || 'D';
-  const MINUTE_PERIODS = ['5m', '30m'];   // 分钟周期（仅行情板；数据源 astock，收盘后更新）
-  let adjMode = localStorage.getItem(lsKey('adj')) || 'qfq';   // 行情板复权：qfq/none
-  let asof = '';                          // 数据截止时刻（行情板标题展示）
-  let liveTimer = null, liveBusy = false; // 盘中实时：只轮询当前主图标的
-  const LIVE_MS = 20000;                  // 交易时段轮询间隔
-  function loadToggles(key, defaults) {    // localStorage 坏值不炸整个看板模块
-    try { return Object.assign(defaults, JSON.parse(localStorage.getItem(key) || '{}')); }
-    catch { return defaults; }
-  }
-  const toggles = loadToggles(lsKey('toggles'),
-    { maSel: null, boll: false, macd: true, kdj: false, vol: true, chip: false, chan: false, duan: false, bei: false });
-  if (!Array.isArray(toggles.maSel)) {          // 旧版只有 ma:true/false
-    toggles.maSel = toggles.ma === false ? [] : MA_DEFAULT.slice();
-  }
-  delete toggles.ma;
-  const maOn = () => new Set(toggles.maSel);
+  const MINUTE_PERIODS = ['5m', '30m'];
+  let adjMode = localStorage.getItem(lsKey('adj')) || 'qfq';
+  let asof = '';
+  let liveTimer = null, liveBusy = false;
+  const LIVE_MS = 20000;
+  const toggles = window.BzChartKit.loadToggles(lsKey('toggles'));
 
-  /* ---------------- 小地图：全历史缩略条（点击/拖动跳转可视区间） ---------------- */
+  /* ---------------- 小地图：全历史缩略条 ---------------- */
   class Minimap {
     constructor() {
-      this.cvs = document.getElementById(P + '-minimap');
+      this.cvs = $( 'minimap');
       this.ctx = this.cvs.getContext('2d');
       this.bars = [];
       this.drag = false;
@@ -54,10 +730,9 @@ window.createBoard = function createBoard(cfg) {
     }
     attach(chart) { this.chart = chart; }
     setBars(bars) { this.bars = bars || []; this.redraw(); }
-    /** 画布内的 x → bar 索引（对齐主图时间轴宽度，不含右侧价格轴） */
     _idxAt(ev) {
       const r = this.cvs.getBoundingClientRect();
-      const tsW = (this.chart && this.chart.timeScale().width()) || r.width;
+      const tsW = (this.chart && this.chart.timeScale().width()) || Math.max(1, r.width - 62);
       const x = ev.clientX - r.left;
       const n = this.bars.length;
       return n ? Math.max(0, Math.min(n - 1, Math.round((x / tsW) * (n - 1)))) : -1;
@@ -85,8 +760,7 @@ window.createBoard = function createBoard(cfg) {
       const n = this.bars.length;
       if (!n || !this.chart) return;
       const T = window.BzTheme.colors();
-      const tsW = this.chart.timeScale().width() || w;
-      // 收盘价全历史折线（等比压缩）
+      const tsW = this.chart.timeScale().width() || Math.max(1, w - 62);
       let lo = Infinity, hi = -Infinity;
       for (const b of this.bars) { if (b.c < lo) lo = b.c; if (b.c > hi) hi = b.c; }
       const span = (hi - lo) || 1;
@@ -102,230 +776,88 @@ window.createBoard = function createBoard(cfg) {
       }
       ctx.stroke();
       ctx.globalAlpha = 1;
-      // 当前可视窗口高亮
       const vr = this.chart.timeScale().getVisibleLogicalRange();
       if (vr) {
         const x0 = Math.max(0, (vr.from / Math.max(1, n - 1)) * tsW);
         const x1 = Math.min(tsW, (vr.to / Math.max(1, n - 1)) * tsW);
         ctx.fillStyle = T.accent;
-        ctx.globalAlpha = 0.13;
+        ctx.globalAlpha = 0.14;
         ctx.fillRect(x0, 0, x1 - x0, h);
-        ctx.globalAlpha = 0.7;
+        ctx.globalAlpha = 0.75;
         ctx.fillStyle = T.accent;
         ctx.fillRect(x0, 0, 1.5, h);
-        ctx.fillRect(x1 - 1.5, 0, 1.5, h);
+        ctx.fillRect(Math.max(0, x1 - 1.5), 0, 1.5, h);
         ctx.globalAlpha = 1;
       }
     }
   }
   let minimap = null;
-  let syncingVR = false;                 // 主图 → 小面板可视范围同步防回环
 
-  /* ---------------- 图表：主面板 + 指标小面板（各独立 chart，时间轴只在最底） ---------------- */
-  const AXIS_W = 62;                       // 各面板右轴定宽 → 时间轴垂直对齐
-
-  function mkPane(elId) {
-    const T = window.BzTheme.colors();
-    return LightweightCharts.createChart($(elId), {
-      layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 10 },
-      grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
-      rightPriceScale: {
-        borderColor: T.line, minimumWidth: AXIS_W, maximumWidth: AXIS_W,
-        scaleMargins: { top: 0.12, bottom: 0.08 },
-      },
-      timeScale: { borderColor: T.line, visible: false, rightOffset: 5 },
-      crosshair: { mode: 0 },
-      autoSize: true,
-      handleScroll: false, handleScale: false,   // 小面板不响应交互，主面板单向同步
+  function syncDrawBtns() {
+    if (!wb || !wb.overlay) return;
+    root.querySelectorAll('[data-draw]').forEach((x) => {
+      x.classList.toggle('on', x.dataset.draw === wb.overlay.mode);
     });
   }
 
   function buildChart() {
-    for (const c of [chart, volChart, bollChart, macdChart, kdjChart]) {
-      if (c) { c.remove(); }
-    }
-    chart = bollChart = macdChart = kdjChart = volChart = null;
-    const T = window.BzTheme.colors();
-    // 主面板：K线 + MA + 画线（时间轴隐藏，由最底小面板显示）
-    chart = LightweightCharts.createChart($('chart'), {
-      layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 12 },
-      grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
-      rightPriceScale: {
-        borderColor: T.line, minimumWidth: AXIS_W, maximumWidth: AXIS_W,
-        scaleMargins: { top: 0.08, bottom: 0.05 },   // 顶部留给可换行的图例
-      },
-      timeScale: { borderColor: T.line, visible: false, rightOffset: 5 },
-      crosshair: { mode: 0 },
-      autoSize: true,
-    });
-    candle = chart.addCandlestickSeries({
-      upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN,
-      wickUpColor: UP, wickDownColor: DOWN,
-    });
-    maS = {};
-    for (const m of MA_DEFS) {
-      maS[m.p] = chart.addLineSeries({
-        color: window.BzTheme.maColor(m.p, m.color), lineWidth: 1,
-        // 不设 title：图表库会在右侧价格轴额外画「MA5 1407.6」标签，
-        // 和筹码峰/彼此重叠；均线名称已由顶部图例给出。
-        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    if (!minimap) minimap = new Minimap();
+    if (!wb) {
+      wb = window.BzChartKit.createWorkbench({
+        ids: {
+          chart: P + '-chart',
+          paneMain: P + '-pane-main',
+          paneBoll: P + '-pane-boll',
+          paneVol: P + '-pane-vol',
+          paneMacd: P + '-pane-macd',
+          paneKdj: P + '-pane-kdj',
+          bollChart: P + '-bollchart',
+          volChart: P + '-volchart',
+          macdChart: P + '-macdchart',
+          kdjChart: P + '-kdjchart',
+          legend: P + '-legend',
+          chip: P + '-chip',
+        },
+        rightOffset: 5,
+        blindMode: false,
+        timeOf: (b) => (b.t != null ? b.t : b.d),
+        getTitle: (b) => `${curName} ${b.d}`,
+        onRangeChange: () => minimap && minimap.redraw(),
+        onOverlayModeChange: syncDrawBtns,
+        onOverlayChange: saveLines,
+        onOverlayStyleChange: (st) => drawStyleCtrl && drawStyleCtrl.sync(st),
       });
     }
-    // 小面板：BOLL（竹线+三轨）/ VOL / MACD / KDJ
-    bollChart = mkPane('bollchart');
-    bollBar = bollChart.addBarSeries({
-      upColor: UP, downColor: DOWN, thinBars: true,
-      priceLineVisible: false, lastValueVisible: false,
-    });
-    bollS = {
-      mid: bollChart.addLineSeries({ color: '#f0b90b', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      up: bollChart.addLineSeries({ color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      low: bollChart.addLineSeries({ color: '#8892a6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    };
-    volChart = mkPane('volchart');
-    volS = volChart.addHistogramSeries({
-      priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: false,
-    });
-    macdChart = mkPane('macdchart');
-    macdS = {
-      hist: macdChart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false }),
-      dif: macdChart.addLineSeries({ color: '#e0483e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      dea: macdChart.addLineSeries({ color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    };
-    kdjChart = mkPane('kdjchart');
-    kdjS = {
-      k: kdjChart.addLineSeries({ color: '#f0b90b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      d: kdjChart.addLineSeries({ color: '#4a90e2', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-      j: kdjChart.addLineSeries({ color: '#c77dff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
-    };
-
-    overlay = new window.Overlay(chart, candle, $('pane-main'), {
-      onModeChange: syncDrawBtns,
-      onChange: saveLines,
-    });
-    // 筹码峰：跟随主面板 chart 重建（canvas 本身持久）
-    if (!chip && window.ChipProfile) chip = new window.ChipProfile(document.getElementById(P + '-chip'));
-    if (chip) chip.attach(chart, candle);
-    if (!minimap) minimap = new Minimap();
+    const { chart, overlay } = wb.build();
     minimap.attach(chart);
-    // 主面板 → 小面板：可视范围单向同步（小面板 handleScale 已关，无回环）
-    chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
-      minimap.redraw();
-      if (r && !syncingVR) {
-        syncingVR = true;
-        for (const c of [bollChart, volChart, macdChart, kdjChart]) {
-          try { c.timeScale().setVisibleLogicalRange(r); } catch { /* 空数据面板 */ }
-        }
-        syncingVR = false;
-      }
-    });
-    chart.subscribeClick((param) => {
-      if (overlay.handleClick(param)) saveLines();
-    });
-    chart.subscribeCrosshairMove((param) => {
-      updateLegend(param);                // 内含小面板十字光标同步
-    });
-    window.__bzView = { chart, overlay, minimap };   // 调试/自动化测试用
-
+    window.__bzView = { chart, overlay, minimap };
     applyToggles();
   }
 
-  /** 时间轴只挂最底部的可见小面板（分钟周期显示时分） */
-  function refreshAxisOwner() {
-    const order = [
-      [bollChart, toggles.boll], [volChart, toggles.vol],
-      [macdChart, toggles.macd], [kdjChart, toggles.kdj],
-    ];
-    let owner = null;
-    for (const [c, on] of order) if (on) owner = c;
-    const minute = MINUTE_PERIODS.includes(period);
-    for (const [c, on] of order) {
-      c.timeScale().applyOptions({ visible: c === owner, timeVisible: minute, secondsVisible: false });
-    }
-  }
-
-  /** 画线工具按钮高亮与 overlay.mode 同步（含画完线自动复位 none 的场景） */
-  function syncDrawBtns() {
-    root.querySelectorAll('[data-draw]').forEach((x) => {
-      x.classList.toggle('on', x.dataset.draw === overlay.mode);
-    });
-  }
-
-  /* ---------------- 数据渲染 ---------------- */
-  /** 指标重灌：关闭的指标清空数据（visible:false 的 series 仍会参与主轴
-   *  autoscale，年K 小样本的 BOLL 下轨可为负，不清会污染价格刻度）。 */
-  function refillIndicators(bars) {
-    const closes = bars.map((b) => b.c);
-    const tOf = (i) => (bars[i].t != null ? bars[i].t : bars[i].d);
-    const line = (arr) => arr.map((v, i) => (v == null ? null : { time: tOf(i), value: v })).filter(Boolean);
-
-    const on = maOn();
-    for (const m of MA_DEFS) {
-      maS[m.p].setData(on.has(m.p) ? line(window.Ind.sma(closes, m.p)) : []);
-    }
-    if (toggles.boll) {
-      const bo = window.Ind.boll(closes);
-      bollBar.setData(bars.map((b) => ({ time: b.t != null ? b.t : b.d, open: b.o, high: b.h, low: b.l, close: b.c })));
-      bollS.mid.setData(line(bo.mid));
-      bollS.up.setData(line(bo.up));
-      bollS.low.setData(line(bo.low));
-    } else {
-      bollBar.setData([]);
-      bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
-    }
-    if (toggles.macd) {
-      const T = window.BzTheme.colors();
-      const mc = window.Ind.macd(closes);
-      macdS.hist.setData(mc.hist.map((v, i) => ({
-        time: tOf(i), value: v, color: v >= 0 ? T.macdUp : T.macdDown,
-      })));
-      macdS.dif.setData(mc.dif.map((v, i) => ({ time: tOf(i), value: v })));
-      macdS.dea.setData(mc.dea.map((v, i) => ({ time: tOf(i), value: v })));
-    } else {
-      macdS.hist.setData([]); macdS.dif.setData([]); macdS.dea.setData([]);
-    }
-    if (toggles.kdj) {
-      const kj = window.Ind.kdj(bars);
-      kdjS.k.setData(kj.k.map((v, i) => ({ time: tOf(i), value: v })));
-      kdjS.d.setData(kj.d.map((v, i) => ({ time: tOf(i), value: v })));
-      kdjS.j.setData(kj.j.map((v, i) => ({ time: tOf(i), value: v })));
-    } else {
-      kdjS.k.setData([]); kdjS.d.setData([]); kdjS.j.setData([]);
-    }
+  function curBars() {
+    return MINUTE_PERIODS.includes(period) ? rawBars : window.Ind.aggregate(rawBars, period);
   }
 
   function renderAll(keepView = false) {
-    if (!chart || !curKey) return;
+    if (!wb || !wb.chart || !curKey) return;
     if (!rawBars.length) { $('title').textContent = `${curName}：无数据`; return; }
-    const prevVR = keepView ? chart.timeScale().getVisibleLogicalRange() : null;
-    const T = window.BzTheme.colors();
+    const prevVR = keepView ? wb.chart.timeScale().getVisibleLogicalRange() : null;
+    const isMin = MINUTE_PERIODS.includes(period);
     const bars = curBars();
-    const tOf = (b) => (b.t != null ? b.t : b.d);       // 分钟 bar 用 unix ts，日线用日期串
-    candle.setData(bars.map((b) => ({ time: tOf(b), open: b.o, high: b.h, low: b.l, close: b.c })));
-    volS.setData(toggles.vol ? bars.map((b) => ({
-      time: tOf(b), value: b.v,
-      color: b.c >= b.o ? T.volUp : T.volDown,
-    })) : []);
-    refreshAxisOwner();
-    refillIndicators(bars);
 
-    overlay.setBars(bars);
-    overlay.setChan(window.Ind.chanView(bars, toggles));
+    wb.renderBars(bars, toggles, isMin);
     minimap && minimap.setBars(bars);
 
-    // 默认显示最近 ~260 根；盘中增量刷新时保留用户当前视窗，避免每 20s 被拽回右端
-    chart.timeScale().setVisibleLogicalRange(prevVR || {
+    wb.chart.timeScale().setVisibleLogicalRange(prevVR || {
       from: Math.max(0, bars.length - 260),
       to: Math.min(bars.length + 5, bars.length + 8),
     });
-    updateLegend(null);
-    chip && chip.setBars(bars);
+    wb.updateLegend(null);
+
     const pn = { '5m': '5分', '30m': '30分', D: '日K', W: '周K', M: '月K', Y: '年K' }[period];
-    const isMin = MINUTE_PERIODS.includes(period);
     const scope = isMin
       ? `${rawBars[0].d.slice(0, 10)} ~ ${rawBars[rawBars.length - 1].d.slice(0, 10)}`
       : `${rawBars[0].d} ~ ${rawBars[rawBars.length - 1].d}`;
-    // 日K/分钟当前周期已是原始根数，不再重复「日线 N 根 · 日K N 根」
     const cnt = isMin ? `${pn} ${rawBars.length} 根（限最近）`
       : period === 'D' ? `日K ${bars.length} 根`
         : `日线 ${rawBars.length} 根 · ${pn} ${bars.length} 根`;
@@ -334,15 +866,8 @@ window.createBoard = function createBoard(cfg) {
       (cfg.mode === 'market' && asof ? ` · 数据截至 ${asof.slice(0, 10)}${isMin ? ' ' + asof.slice(11, 16) : ''}` : '') + `）`;
   }
 
-  /** 当前周期 bars：分钟=rawBars 原样（含 t），日线系=本地聚合 */
-  function curBars() {
-    return MINUTE_PERIODS.includes(period) ? rawBars : window.Ind.aggregate(rawBars, period);
-  }
-
-  /* ---------------- 盘中实时 K 线：只刷新当前主图标的 ----------------
-   * 日线最后一根走腾讯快照；5/30 分钟走新浪分钟 K（均含当天未收盘 bar）。
-   * 合并进 rawBars 后按现有周期重算指标；不写服务端任何数据文件。 */
-  let liveFast = true;                    // 最近一次响应是否处于交易时段
+  /* ---------------- 盘中实时 K 线 ---------------- */
+  let liveFast = true;
 
   function sameBar(a, b) {
     return a.d === b.d && a.o === b.o && a.h === b.h && a.l === b.l &&
@@ -408,211 +933,47 @@ window.createBoard = function createBoard(cfg) {
       if (typeof d.trading === 'boolean') liveFast = d.trading;
       const changed = minute ? mergeMinuteLive(d.bars) : mergeDailyLive(d.bar);
       if (changed) renderAll(true);
-    } catch { /* 上游抖动：保留已有 bar，下轮再试 */ }
+    } catch { /* 上游抖动忽略 */ }
     finally { liveBusy = false; }
   }
 
-  /** 轮询器：交易时段 20s，非交易时段 2min；页面隐藏时也降速 */
   function startLive() {
     if (liveTimer) clearTimeout(liveTimer);
     const tick = async () => {
       await refreshLive();
-      const wait = document.hidden || root.classList.contains('hidden')
-        ? 60000 : (liveFast ? LIVE_MS : 120000);
+      if (root.classList.contains('hidden')) return;   // 切走 Tab 后停止空转轮询
+      const wait = document.hidden ? 60000 : (liveFast ? LIVE_MS : 120000);
       liveTimer = setTimeout(tick, wait);
     };
     liveTimer = setTimeout(tick, LIVE_MS);
   }
 
   function applyToggles() {
-    const on = maOn();
-    for (const m of MA_DEFS) maS[m.p].applyOptions({ visible: on.has(m.p) });
-    const maBtn = $('ma-btn');
-    if (maBtn) maBtn.classList.toggle('on', on.size > 0);
-    const menu = $('ma-menu');
-    if (menu) {
-      menu.querySelectorAll('input[data-ma]').forEach((cb) => { cb.checked = on.has(Number(cb.dataset.ma)); });
+    if (!wb || !wb.chart) return;
+    const isMin = MINUTE_PERIODS.includes(period);
+    wb.applyPaneVisibility(toggles, isMin);
+    maMenuCtrl && maMenuCtrl.sync();
+    if (rawBars.length) {
+      const bars = curBars();
+      wb.refillIndicators(bars, toggles);
+      if (wb.overlay) wb.overlay.setChan(window.Ind.chanView(bars, toggles));
     }
-    // 各指标独立小面板：显隐即面板显隐，时间轴重新挂到最底可见面板
-    const visPane = (id, on) => { const el = $(id); if (el) el.classList.toggle('hidden', !on); };
-    visPane('pane-boll', toggles.boll);
-    visPane('pane-vol', toggles.vol);
-    visPane('pane-macd', toggles.macd);
-    visPane('pane-kdj', toggles.kdj);
-    refreshAxisOwner();
-    chip && chip.setVisible(!!toggles.chip);
-    // 关闭的指标清空数据（面板隐藏即可见性，清数据防内存与轴残留）
-    if (rawBars.length) refillIndicators(curBars());
     root.querySelectorAll('[data-tg]').forEach((b) => {
       b.classList.toggle('on', !!toggles[b.dataset.tg]);
     });
     localStorage.setItem(lsKey('toggles'), JSON.stringify(toggles));
-    if (overlay) {
-      overlay.setChan(window.Ind.chanView(curBars(), toggles));
-    }
   }
 
-  /** 画线样式浮层：颜色/粗细/虚实；有选中线作用于选中，否则设为新线默认 */
-  function buildDrawStyle() {
-    const pop = $('draw-style-pop');
-    const btn = $('draw-style');
-    if (!pop || !btn) return;
-    const COLORS = ['#f0b90b', '#e0483e', '#4a90e2', '#1fa06b', '#c77dff', '#e6ebf4'];
-    pop.innerHTML =
-      `<div class="ds-row"><span class="ds-lab">颜色</span><span class="ds-colors">` +
-      COLORS.map((c) => `<button class="ds-c" data-color="${c}" style="background:${c}" title="${c}"></button>`).join('') +
-      `</span></div>` +
-      `<div class="ds-row"><span class="ds-lab">粗细</span>` +
-      `<button class="ds-b" data-width="1">细</button>` +
-      `<button class="ds-b" data-width="1.6">中</button>` +
-      `<button class="ds-b" data-width="2.6">粗</button></div>` +
-      `<div class="ds-row"><span class="ds-lab">线型</span>` +
-      `<button class="ds-b" data-dash="0">实线</button>` +
-      `<button class="ds-b" data-dash="1">虚线</button></div>` +
-      `<div class="ds-row"><button class="ds-del" data-del="1">删除选中线</button></div>`;
-    pop.onclick = (e) => {
-      const t = e.target.closest('button');
-      if (!t || !overlay) return;
-      e.stopPropagation();
-      if (t.dataset.color) overlay.setStyle({ color: t.dataset.color });
-      else if (t.dataset.width) overlay.setStyle({ width: Number(t.dataset.width) });
-      else if (t.dataset.dash) overlay.setStyle({ dash: t.dataset.dash === '1' });
-      else if (t.dataset.del) overlay.deleteSelected();
-    };
-    btn.onclick = (e) => { e.stopPropagation(); pop.classList.toggle('hidden'); };
-    document.addEventListener('click', (e) => {
-      if (!pop.classList.contains('hidden') && !pop.contains(e.target) && e.target !== btn) pop.classList.add('hidden');
-    });
-  }
+  /* ---------------- 列表 / 自选 / 选股 ---------------- */
+  let quotes = {};
+  let quoteAsOf = '';
 
-  /** MA 周期勾选浮层：勾选即时生效（本板持久化） */
-  function buildMaMenu() {
-    const menu = $('ma-menu');
-    const btn = $('ma-btn');
-    if (!menu || !btn) return;
-    menu.textContent = '';
-    for (const m of MA_DEFS) {
-      const lab = document.createElement('label');
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.dataset.ma = String(m.p);
-      cb.checked = toggles.maSel.includes(m.p);
-      cb.onchange = () => {
-        toggles.maSel = cb.checked
-          ? [...new Set([...toggles.maSel, m.p])].sort((a, b) => a - b)
-          : toggles.maSel.filter((p) => p !== m.p);
-        applyToggles();
-        updateLegend(null);
-      };
-      const dot = document.createElement('i');
-      dot.dataset.ma = String(m.p);
-      dot.style.background = window.BzTheme.maColor(m.p, m.color);
-      lab.append(cb, dot, document.createTextNode(`MA${m.p}`));
-      menu.appendChild(lab);
-    }
-    btn.onclick = (e) => { e.stopPropagation(); menu.classList.toggle('hidden'); };
-    // 点浮层外或按 Esc 收起
-    document.addEventListener('click', (e) => {
-      if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== btn) {
-        menu.classList.add('hidden');
-      }
-    });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') menu.classList.add('hidden');
-    });
-  }
-
-  /** 主题切换后同步 MA 菜单色点（图表 series 会重建，菜单不重建） */
-  function syncMaDots() {
-    const menu = $('ma-menu');
-    if (!menu) return;
-    menu.querySelectorAll('i[data-ma]').forEach((dot) => {
-      const m = MA_DEFS.find((x) => String(x.p) === dot.dataset.ma);
-      if (m) dot.style.background = window.BzTheme.maColor(m.p, m.color);
-    });
-  }
-
-  /* ---------------- 图例 ---------------- */
-  const fmtVol = (v) => v >= 1e8 ? (v / 1e8).toFixed(2) + '亿'
-    : v >= 1e4 ? (v / 1e4).toFixed(2) + '万' : String(Math.round(v));
-
-  function updateLegend(param) {
-    const el = $('legend');
-    if (!rawBars.length) { el.textContent = ''; return; }
-    const T = window.BzTheme.colors();
-    const bars = curBars();
-    let idx = bars.length - 1;
-    if (param && param.time) {
-      const i = bars.findIndex((b) => (b.t != null ? b.t : b.d) === param.time);
-      if (i >= 0) idx = i;
-    }
-    const b = bars[idx];
-    const chg = idx > 0 ? (b.c / bars[idx - 1].c - 1) * 100 : 0;
-    const closes = bars.map((x) => x.c);
-    const sec = (txt, color) => txt ? `<span class="lg" style="color:${color}">${txt}</span>` : '';
-    let html =
-      `<span class="lg"><b style="color:${chg >= 0 ? T.up : T.down}">${curName} ${b.d}</b> ` +
-      `开${b.o.toFixed(2)} 高${b.h.toFixed(2)} 低${b.l.toFixed(2)} 收${b.c.toFixed(2)} ` +
-      `<span style="color:${chg >= 0 ? T.up : T.down}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span></span>`;
-    if (toggles.maSel.length) {
-      const on = maOn();
-      const maParts = MA_DEFS.filter((m) => on.has(m.p)).map((m) => {
-        const v = window.Ind.sma(closes, m.p)[idx];
-        if (v == null) return '';
-        const col = window.BzTheme.maColor(m.p, m.color);
-        return `<span style="color:${col}">MA${m.p}</span> <b>${v.toFixed(1)}</b>`;
-      }).filter(Boolean);
-      if (maParts.length) html += `<span class="lg" style="color:${T.dim}">${maParts.join(' ')}</span>`;
-    }
-    const xv = {};                       // 小面板十字光标定位值（各面板用自身指标值）
-    if (toggles.vol) { xv.vol = b.v; html += sec(`VOL <b>${fmtVol(b.v)}</b>`, b.c >= b.o ? T.up : T.down); }
-    if (toggles.macd) {
-      const mc = window.Ind.macd(closes);
-      const d = mc.dif[idx], e = mc.dea[idx], h = mc.hist[idx];
-      xv.dif = d;
-      if (d != null && e != null) {
-        html += sec(`MACD <b style="color:${T.up}">${d.toFixed(2)}</b> ` +
-          `<b style="color:${T.blue}">${e.toFixed(2)}</b> ` +
-          `<b style="color:${h >= 0 ? T.up : T.down}">${h.toFixed(2)}</b>`, T.dim);
-      }
-    }
-    if (toggles.kdj) {
-      const kj = window.Ind.kdj(bars);
-      xv.k = kj.k[idx];
-      html += sec(`K <b style="color:#f0b90b">${kj.k[idx].toFixed(1)}</b> ` +
-        `D <b style="color:${T.blue}">${kj.d[idx].toFixed(1)}</b> ` +
-        `J <b style="color:#c77dff">${kj.j[idx].toFixed(1)}</b>`, T.dim);
-    }
-    if (toggles.boll) {
-      const bo = window.Ind.boll(closes);
-      xv.bollMid = bo.mid[idx];
-      if (bo.mid[idx] != null) {
-        html += sec(`BOLL <b style="color:#f0b90b">${bo.mid[idx].toFixed(2)}</b> ` +
-          `<b style="color:${T.dim}">${bo.up[idx].toFixed(2)}</b> ` +
-          `<b style="color:${T.dim}">${bo.low[idx].toFixed(2)}</b>`, T.dim);
-      }
-    }
-    el.innerHTML = html;
-    // 主面板十字光标 → 各小面板（无 param 时全部清除）
-    const tk = b.t != null ? b.t : b.d;
-    const setX = (c, series, v) => {
-      if (!c || !series) return;
-      if (param && param.time != null && v != null) c.setCrosshairPosition(v, tk, series);
-      else c.clearCrosshairPosition();
-    };
-    setX(bollChart, bollBar, xv.bollMid != null ? b.v : null);      // BOLL 面板定位到收盘价
-    setX(volChart, volS, xv.vol);
-    setX(macdChart, macdS.dif, xv.dif);
-    setX(kdjChart, kdjS.k, xv.k);
-  }
-
-  /* ---------------- 列表 / 选指 / 刷新 ---------------- */
   async function loadList() {
-    if (cfg.mode === 'market') {           // 行情板：自选列表（与训练页自选共用 bz_watchlist）
-      try { watchlist = JSON.parse(localStorage.getItem('bz_watchlist') || '[]'); } catch { watchlist = []; }
-      insts = watchlist.map((w) => ({ key: w.code, name: w.name, group: '自选' }));
+    if (cfg.mode === 'market') {
+      const wl = window.BzWatchlist.load();
+      insts = wl.map((w) => ({ key: w.code, name: w.name, group: '自选' }));
       renderList();
-      refreshQuotes();                               // 进入/刷新自选后立刻取行情
+      refreshQuotes();
       return;
     }
     const d = await fetch('/api/index/list').then((r) => r.json());
@@ -625,20 +986,21 @@ window.createBoard = function createBoard(cfg) {
     const box = $('list');
     box.innerHTML = '';
     if (cfg.mode === 'market') {
-      // 自选 + 搜索结果（/api/search 添加到自选）；自选行悬停出现 ✕ 可移除
       const mk = (it, extra, onDel) => {
         const el = document.createElement('div');
         el.className = 'list-item' + (it.key === curKey ? ' active' : '') + (onDel ? ' has-q' : '');
         el.dataset.key = it.key;
         if (onDel) el.dataset.code = it.key;
         el.innerHTML = onDel
-          ? `<span class="n">${it.name}</span><span class="px"></span>` +
-            `<span class="d">${it.key}</span><span class="pc"></span>` +
+          ? `<span class="n"></span><span class="px"></span>` +
+            `<span class="d"></span><span class="pc"></span>` +
             '<span class="rm" title="从自选移除">✕</span>'
-          : `<span class="n">${it.name}</span><span class="d">${extra || ''}</span>`;
+          : `<span class="n"></span><span class="d"></span>`;
+        el.querySelector('.n').textContent = it.name;
+        el.querySelector('.d').textContent = onDel ? it.key : (extra || '');
         el.onclick = () => {
           if (extra === '＋') addToWatchlist(it);
-          else if (extra === '✓') removeFromWatchlist(it.key);   // 搜索命中已在自选：点击移出
+          else if (extra === '✓') removeFromWatchlist(it.key);
           else select(it.key);
         };
         if (onDel) {
@@ -651,18 +1013,22 @@ window.createBoard = function createBoard(cfg) {
       };
       if (q) {
         fetch('/api/search?q=' + encodeURIComponent(q)).then((r) => r.json()).then((d) => {
-          if (( $('search').value || '').trim().toLowerCase() !== q) return;   // 输入已变
+          if (($('search').value || '').trim().toLowerCase() !== q) return;
           box.innerHTML = '';
           const hits = d.items || [];
           if (!hits.length) box.innerHTML = '<div class="list-group">无匹配</div>';
-          for (const h of hits.slice(0, 30)) mk({ key: h.code, name: `${h.name} ${h.code}` },
-            watchlist.some((w) => w.code === h.code) ? '✓' : '＋');
+          for (const h of hits.slice(0, 30)) {
+            mk(
+              { key: h.code, name: `${h.name} ${h.code}` },
+              window.BzWatchlist.has(h.code) ? '✓' : '＋'
+            );
+          }
         }).catch(() => {});
         return;
       }
       if (!insts.length) box.innerHTML = '<div class="list-group">自选为空：搜索代码/名称添加</div>';
-      for (const it of insts) mk(it, it.key, true);   // 副文本显示代码 + 悬停 ✕
-      paintQuotes();                                  // 有缓存快照先填上，等轮询再刷新
+      for (const it of insts) mk(it, it.key, true);
+      paintQuotes();
       return;
     }
     for (const g of ['A股', '海外']) {
@@ -677,21 +1043,18 @@ window.createBoard = function createBoard(cfg) {
         const el = document.createElement('div');
         el.className = 'list-item' + (it.key === curKey ? ' active' : '');
         el.dataset.key = it.key;
-        el.innerHTML = `<span class="n">${it.name}</span><span class="d">${it.last ? it.last.slice(2) : (it.cached ? '' : '未缓存')}</span>`;
+        el.innerHTML = `<span class="n"></span><span class="d"></span>`;
+        el.querySelector('.n').textContent = it.name;
+        el.querySelector('.d').textContent = it.last ? it.last.slice(2) : (it.cached ? '' : '未缓存');
         el.onclick = () => select(it.key);
         box.appendChild(el);
       }
     }
   }
 
-  let watchlist = [];
-  let quotes = {};                       // 实时行情快照 {code: quote}
-  let quoteAsOf = '';                    // 快照时间（服务端）
-
-  /** 拉自选实时行情（腾讯源经服务端缓存，60s 轮询；不在前台不拉） */
   async function refreshQuotes() {
     if (cfg.mode !== 'market' || root.classList.contains('hidden')) return;
-    const codes = watchlist.map((w) => w.code).slice(0, 80);
+    const codes = window.BzWatchlist.load().map((w) => w.code).slice(0, 80);
     if (!codes.length) return;
     try {
       const d = await fetch('/api/market/quotes?codes=' + codes.join(',')).then((r) => r.json());
@@ -699,7 +1062,7 @@ window.createBoard = function createBoard(cfg) {
       quotes = d.quotes || {};
       quoteAsOf = d.asof || '';
       paintQuotes();
-    } catch { /* 行情非关键路径，失败静默 */ }
+    } catch { /* ignore */ }
   }
 
   function paintQuotes() {
@@ -716,10 +1079,8 @@ window.createBoard = function createBoard(cfg) {
     });
   }
 
-  /** 自选移除：同步 localStorage；移除的是当前标的则切到下一个，空则清空图表 */
   function removeFromWatchlist(code) {
-    watchlist = watchlist.filter((w) => w.code !== code);
-    localStorage.setItem('bz_watchlist', JSON.stringify(watchlist));
+    window.BzWatchlist.remove(code);
     loadList();
     if (code === curKey) {
       if (insts.length) select(insts[0].key);
@@ -728,47 +1089,31 @@ window.createBoard = function createBoard(cfg) {
     refreshQuotes();
   }
 
-  /** 自选清空后的空图表状态（保留画线设置不动，仅清数据） */
   function clearChart() {
     curKey = null;
     rawBars = [];
-    candle.setData([]);
-    volS.setData([]);
-    for (const m of MA_DEFS) maS[m.p].setData([]);
-    bollBar.setData([]);
-    bollS.mid.setData([]); bollS.up.setData([]); bollS.low.setData([]);
-    macdS.hist.setData([]); macdS.dif.setData([]); macdS.dea.setData([]);
-    kdjS.k.setData([]); kdjS.d.setData([]); kdjS.j.setData([]);
-    overlay.setBars([]);
-    overlay.setLines([]);
-    overlay.setChan(null);
+    wb && wb.clearAll();
     minimap && minimap.setBars([]);
-    chip && chip.setBars([]);
-    $('legend').textContent = '';
     $('title').textContent = '自选为空：搜索代码/名称添加';
   }
 
   function addToWatchlist(it) {
     const code = it.key;
-    if (watchlist.some((w) => w.code === code)) return;
-    const name = it.name.replace(/\s+\d{6}$/, '');     // 去掉搜索结果里拼的代码尾巴
-    watchlist.push({ code, name });
-    localStorage.setItem('bz_watchlist', JSON.stringify(watchlist));
+    window.BzWatchlist.add(code, it.name);
     loadList();
     select(code);
     refreshQuotes();
   }
 
-  /** 本板数据拉取：指数 /api/index/kline；个股/ETF /api/market/kline（日线或分钟） */
   function klineUrl(key) {
     if (cfg.mode === 'market') {
-      const freq = MINUTE_PERIODS.includes(period) ? period.replace('m', 'min') : 'D';   // 5m→5min
+      const freq = MINUTE_PERIODS.includes(period) ? period.replace('m', 'min') : 'D';
       return `/api/market/kline?code=${encodeURIComponent(key)}&freq=${freq}&adj=${adjMode}`;
     }
     return '/api/index/kline?key=' + encodeURIComponent(key);
   }
 
-  let selSeq = 0;                        // 竞态守卫：晚到的旧响应不覆盖新选择
+  let selSeq = 0;
 
   async function select(key) {
     curKey = key;
@@ -779,16 +1124,16 @@ window.createBoard = function createBoard(cfg) {
     $('title').textContent = `${curName} 加载中…`;
     try {
       const d = await fetch(klineUrl(key)).then((r) => r.json());
-      if (seq !== selSeq) return;        // 期间用户又切了别的标的
+      if (seq !== selSeq) return;
       if (d.error) throw new Error(d.error);
       asof = d.asof || '';
       rawBars = d.bars.map((b) => ({
         d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5],
-        t: b[0].length > 10 ? Math.floor(Date.parse(b[0].replace(' ', 'T')) / 1000) : null,  // 分钟→unix ts（含秒无需再拼）
+        t: b[0].length > 10 ? Math.floor(Date.parse(b[0].replace(' ', 'T')) / 1000) : null,
       }));
-      overlay.setLines(loadLines());
+      wb.overlay.setLines(loadLines());
       renderAll();
-      refreshLive();                            // 先出历史，再补当天未收盘 bar
+      refreshLive();
     } catch (e) {
       if (seq === selSeq) $('title').textContent = `${curName} 加载失败：${e.message}`;
     }
@@ -816,46 +1161,12 @@ window.createBoard = function createBoard(cfg) {
     try { return JSON.parse(localStorage.getItem(lkey()) || '[]'); } catch { return []; }
   }
   function saveLines() {
-    localStorage.setItem(lkey(), JSON.stringify(overlay.lines));
-  }
-
-  /* ---------------- 图表模板（周期+指标开关组合，localStorage） ---------------- */
-  const TPL_KEY = 'bz_tpl_' + P;
-  function tpls() {
-    try { return JSON.parse(localStorage.getItem(TPL_KEY) || '{}'); } catch { return {}; }
-  }
-  function refreshTplSel() {
-    const sel = $('tpl-sel');
-    sel.textContent = '';                  // DOM 构建：模板名自由输入不拼 HTML
-    for (const k of ['', ...Object.keys(tpls())]) {
-      const o = document.createElement('option');
-      o.value = k;
-      o.textContent = k || '模板…';
-      sel.appendChild(o);
+    if (wb && wb.overlay && curKey) {
+      localStorage.setItem(lkey(), JSON.stringify(wb.overlay.lines));
     }
   }
-  function applyTpl(t) {
-    if (t.period) {
-      const wasPeriod = period;
-      period = t.period;
-      localStorage.setItem(lsKey('period'), period);
-      root.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x.dataset.period === period));
-      // 分钟周期之间（5m↔30m）也要重取数，日线系才本地聚合
-      if (cfg.mode === 'market' &&
-          (MINUTE_PERIODS.includes(period) || MINUTE_PERIODS.includes(wasPeriod))) {
-        Object.assign(toggles, t.toggles || {});
-        applyToggles();
-        if (curKey) select(curKey);
-        return;
-      }
-    }
-    Object.assign(toggles, t.toggles || {});
-    applyToggles();
-    renderAll();
-    refreshLive();
-  }
 
-  /* ---------------- 初始化 ---------------- */
+  /* ---------------- 初始化与事件绑定 ---------------- */
   function bind() {
     root.querySelectorAll('[data-period]').forEach((b) => {
       b.classList.toggle('on', b.dataset.period === period);
@@ -864,17 +1175,16 @@ window.createBoard = function createBoard(cfg) {
         period = b.dataset.period;
         localStorage.setItem(lsKey('period'), period);
         root.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x === b));
-        // 分钟周期（含 5m↔30m 互切）数据不同，需重取；日线系周期本地聚合即可
         if (cfg.mode === 'market' &&
             (MINUTE_PERIODS.includes(period) || MINUTE_PERIODS.includes(wasPeriod))) {
           if (curKey) select(curKey);
           return;
         }
         renderAll();
-        refreshLive();                       // 切周期后补当天实时 bar
+        refreshLive();
       };
     });
-    // 行情板：复权切换（前复权锚定最新 / 不复权）
+
     if (cfg.mode === 'market') {
       const adjBtn = $('adj');
       const syncAdj = () => {
@@ -889,89 +1199,113 @@ window.createBoard = function createBoard(cfg) {
         if (curKey) select(curKey);
       };
     }
+
     root.querySelectorAll('[data-tg]').forEach((b) => {
-      b.onclick = () => { toggles[b.dataset.tg] = !toggles[b.dataset.tg]; applyToggles(); updateLegend(null); };
-    });
-    buildMaMenu();
-    buildDrawStyle();
-    root.querySelectorAll('[data-draw]').forEach((b) => {
       b.onclick = () => {
-        const m = b.dataset.draw;
-        overlay.setMode(overlay.mode === m ? 'none' : m);   // 高亮经 onModeChange 同步
+        toggles[b.dataset.tg] = !toggles[b.dataset.tg];
+        applyToggles();
+        wb && wb.updateLegend(null);
       };
     });
-    $('undo').onclick = () => { if (overlay.undo()) saveLines(); };
-    $('redo').onclick = () => { if (overlay.redo()) saveLines(); };
-    $('clear-draw').onclick = () => { overlay.clearAll(); saveLines(); };
+
+    maMenuCtrl = window.BzChartKit.buildMaMenu({
+      btnEl: $('ma-btn'),
+      menuEl: $('ma-menu'),
+      getMaSel: () => toggles.maSel,
+      onChange: (next) => {
+        toggles.maSel = next;
+        applyToggles();
+        wb && wb.updateLegend(null);
+      },
+    });
+
+    drawStyleCtrl = window.BzChartKit.buildDrawStylePop({
+      btnEl: $('draw-style'),
+      popEl: $('draw-style-pop'),
+      getOverlay: () => wb && wb.overlay,
+    });
+
+    root.querySelectorAll('[data-draw]').forEach((b) => {
+      b.onclick = () => {
+        if (!wb || !wb.overlay) return;
+        const m = b.dataset.draw;
+        wb.overlay.setMode(wb.overlay.mode === m ? 'none' : m);
+      };
+    });
+
+    $('undo').onclick = () => { if (wb && wb.overlay && wb.overlay.undo()) saveLines(); };
+    $('redo').onclick = () => { if (wb && wb.overlay && wb.overlay.redo()) saveLines(); };
+    $('clear-draw').onclick = () => { if (wb && wb.overlay) { wb.overlay.clearAll(); saveLines(); } };
     if ($('refresh')) $('refresh').onclick = refreshData;
     $('search').oninput = renderList;
 
-    // 图表模板
-    refreshTplSel();
-    $('tpl-save').onclick = () => {
-      window.bzPrompt('模板名称：', '', (name) => {
-        name = name.slice(0, 40);
-        if (!name) return;
-        const m = tpls();
-        m[name] = { period, toggles: { ...toggles } };
-        localStorage.setItem(TPL_KEY, JSON.stringify(m));
-        refreshTplSel();
-        $('tpl-sel').value = name;
-      });
-    };
-    $('tpl-del').onclick = () => {
-      const name = $('tpl-sel').value;
-      if (!name) return;
-      const m = tpls();
-      delete m[name];
-      localStorage.setItem(TPL_KEY, JSON.stringify(m));
-      refreshTplSel();
-    };
-    $('tpl-sel').onchange = () => {
-      const t = tpls()[$('tpl-sel').value];
-      if (t) applyTpl(t);
-    };
+    window.BzChartKit.bindTemplates({
+      storageKey: 'bz_tpl_' + P,
+      selEl: $('tpl-sel'),
+      saveBtn: $('tpl-save'),
+      delBtn: $('tpl-del'),
+      getState: () => ({ period, toggles: { ...toggles } }),
+      onApply: (t) => {
+        if (t.period) {
+          const wasPeriod = period;
+          period = t.period;
+          localStorage.setItem(lsKey('period'), period);
+          root.querySelectorAll('[data-period]').forEach((x) => x.classList.toggle('on', x.dataset.period === period));
+          if (cfg.mode === 'market' &&
+              (MINUTE_PERIODS.includes(period) || MINUTE_PERIODS.includes(wasPeriod))) {
+            Object.assign(toggles, t.toggles || {});
+            applyToggles();
+            if (curKey) select(curKey);
+            return;
+          }
+        }
+        Object.assign(toggles, t.toggles || {});
+        applyToggles();
+        renderAll();
+        refreshLive();
+      },
+    });
 
-    // 顶部导航统一由 window.bzNav 管理（view.js 顶层绑定）
-
-    // 撤销/重做快捷键（仅本板可见时生效；输入框内不拦）
     document.addEventListener('keydown', (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-      if (root.classList.contains('hidden') || !overlay) return;
-      if (e.code === 'KeyZ' && !e.shiftKey) { if (overlay.undo()) saveLines(); }
-      else if (e.code === 'KeyY' || (e.code === 'KeyZ' && e.shiftKey)) { if (overlay.redo()) saveLines(); }
+      if (root.classList.contains('hidden') || !wb || !wb.overlay) return;
+      if (e.code === 'KeyZ' && !e.shiftKey) { if (wb.overlay.undo()) saveLines(); }
+      else if (e.code === 'KeyY' || (e.code === 'KeyZ' && e.shiftKey)) { if (wb.overlay.redo()) saveLines(); }
     });
   }
 
-  /** 进入本板（由 bzNav 调用）：首进建图/加载列表 */
   function enter() {
-    if (!chart) buildChart();            // 首次进入且容器可见时建图
-    if (!insts.length || cfg.mode === 'market') loadList()   // 行情板每次进入都刷新自选
+    if (!wb || !wb.chart) buildChart();
+    if (!insts.length || cfg.mode === 'market') loadList()
       .then(() => { if (!curKey && insts.length) select(cfg.mode === 'market' ? insts[0].key : 'sh000300'); })
       .catch((e) => { $('title').textContent = `列表加载失败：${e.message}`; });
     if (cfg.mode === 'market') refreshQuotes();
-    startLive();                                // 盘中实时：只轮询当前主图
+    startLive();
   }
 
   function init() {
     if (inited) return;
     inited = true;
     bind();
-    if (cfg.mode === 'market') setInterval(refreshQuotes, 60 * 1000);
+    if (cfg.mode === 'market') {
+      setInterval(refreshQuotes, 60 * 1000);
+      window.BzWatchlist.onChange(() => {
+        if (!root.classList.contains('hidden')) loadList();
+      });
+    }
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
+      if (!document.hidden && !root.classList.contains('hidden')) {
         if (cfg.mode === 'market') refreshQuotes();
         refreshLive();
-        startLive();                       // 回前台恢复 20s 节奏
+        startLive();
       }
     });
-    // 主题切换：重建图表（配色/画线 canvas 跟随新主题）
     window.BzTheme.onChange(() => {
       if (!inited) return;
-      if (chart) {
+      maMenuCtrl && maMenuCtrl.sync();
+      if (wb && wb.chart) {
         buildChart();
-        syncMaDots();
-        overlay.setLines(loadLines());
+        wb.overlay.setLines(loadLines());
         if (rawBars.length) renderAll();
       }
     });
@@ -981,11 +1315,11 @@ window.createBoard = function createBoard(cfg) {
 };
 
 window.View = window.createBoard({ mode: 'index' });
-window.Mkt = window.createBoard({ mode: 'market' });   // 个股/ETF 行情板（日线+分钟）
+window.Mkt = window.createBoard({ mode: 'market' });
 
 /* ---------------- 三页签导航（训练 / 指数看板 / 行情） ---------------- */
 window.bzNav = {
-  switch(which) {           // 'train' | 'view' | 'mkt'
+  switch(which) {
     document.getElementById('app-train').classList.toggle('hidden', which !== 'train');
     document.getElementById('screen-view').classList.toggle('hidden', which !== 'view');
     document.getElementById('screen-mkt').classList.toggle('hidden', which !== 'mkt');

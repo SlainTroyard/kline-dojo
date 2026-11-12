@@ -1,39 +1,34 @@
 /* 画线工具（canvas 叠加层）+ 缠论/画线统一渲染（K线道场 · 看板/训练共用）
  * 线存逻辑坐标，看板按指数 key 持久化 localStorage；周期切换时日期自动
- * 吸附到该周期最近的 bar。工具（v1.2）：
+ * 吸附到该周期最近的 bar。工具（v1.3）：
  *   trend   趋势线（2 点）         arrow   箭头（2 点，第二点为箭头方向）
  *   hline   水平线（1 点）
  *   fib     斐波那契回撤（2 点）    channel 平行通道（3 点：基线 2 点+宽度 1 点）
  *   rect    矩形区域（2 点）        text    文字标注（1 点，弹窗输入）
+ *   drect   拖拽框选               pen     自由涂鸦
+ *   select  点选改样式/删除         del     点击删除
  * 通用能力：磁吸（画点工具 12px 内吸附最近 bar 的 OHLC）、撤销/重做
- * （栈深 50，undo()/redo()/clearAll()）、点击线上删除（del 模式）。
- *
- * 历史：
- *  v1.2 新增 fib/channel/rect/text 工具、磁吸、撤销重做、缠论线段/背驰渲染
- *  v1.1 修复：param.logical 浮点取最近 bar；setMode 回调同步工具栏高亮；
- *       canvas 按 devicePixelRatio 缩放；颜色取自 BzTheme 随主题切换。
+ * （栈深 50，undo()/redo()/clearAll()）、绘图区裁剪（不侵入右侧价格轴）。
  */
 'use strict';
 
-/* 轻量输入对话框（主题化，替代原生 prompt——嵌入式 webview 不支持原生弹窗） */
+/* 轻量输入对话框（主题化 CSS 类，替代原生 prompt——嵌入式 webview 不支持原生弹窗） */
 window.bzPrompt = (msg, def, cb) => {
   const old = document.getElementById('bz-prompt');
   if (old) old.remove();
-  const T = window.BzTheme.colors();
   const wrap = document.createElement('div');
   wrap.id = 'bz-prompt';
-  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;display:flex;align-items:center;justify-content:center;';
+  wrap.className = 'bz-prompt-wrap';
   const box = document.createElement('div');
-  box.style.cssText = `background:${T.panel};border:1px solid ${T.line};border-radius:10px;padding:14px 16px;min-width:280px;box-shadow:0 8px 30px rgba(0,0,0,.35);`;
+  box.className = 'bz-prompt-box';
   box.innerHTML =
-    `<div style="color:${T.text};font-size:13px;margin-bottom:10px"></div>` +
-    `<input style="width:100%;padding:7px 9px;border:1px solid ${T.line};border-radius:6px;background:${T.bg};color:${T.text};font-size:13px;box-sizing:border-box;outline:none;">` +
-    `<div style="text-align:right;margin-top:12px;display:flex;gap:8px;justify-content:flex-end;">` +
-    `<button data-act="cancel" style="padding:6px 14px;border:1px solid ${T.line};border-radius:6px;background:transparent;color:${T.dim};cursor:pointer;font-size:13px;">取消</button>` +
-    `<button data-act="ok" style="padding:6px 14px;border:none;border-radius:6px;background:${T.accent};color:${T.onAccent};cursor:pointer;font-size:13px;">确定</button></div>`;
-  const label = box.querySelector('div');
-  label.textContent = msg;
-  const input = box.querySelector('input');
+    `<div class="bz-prompt-title"></div>` +
+    `<input class="bz-prompt-input" type="text" autocomplete="off">` +
+    `<div class="bz-prompt-actions">` +
+    `<button data-act="cancel" class="ghost">取消</button>` +
+    `<button data-act="ok" class="primary">确定</button></div>`;
+  box.querySelector('.bz-prompt-title').textContent = msg;
+  const input = box.querySelector('.bz-prompt-input');
   input.value = def || '';
   wrap.appendChild(box);
   document.body.appendChild(wrap);
@@ -56,8 +51,7 @@ window.Overlay = class Overlay {
    * @param chart lightweight-charts 实例
    * @param series 主图 candlestick series（价格坐标转换）
    * @param container 图表容器 div（canvas 叠加在其内）
-   * @param opts {onModeChange?: (mode)=>void, onChange?: ()=>void}
-   *   onChange：lines 异步变更（文字标注对话框确认）后的持久化回调
+   * @param opts {onModeChange?: (mode)=>void, onChange?: ()=>void, onStyleChange?: (st)=>void}
    */
   constructor(chart, series, container, opts = {}) {
     this.chart = chart;
@@ -65,6 +59,7 @@ window.Overlay = class Overlay {
     this.container = container;
     this.onModeChange = opts.onModeChange || null;
     this.onChange = opts.onChange || null;
+    this.onStyleChange = opts.onStyleChange || null;
     this.bars = [];            // 当前周期 bars [{d,o,h,l,c,v}]（吸附日期用）
     this.lines = [];           // 用户画线
     this.chan = { bis: [], zs: [], duans: [], divs: [] };
@@ -80,7 +75,6 @@ window.Overlay = class Overlay {
     cvs.className = 'bz-overlay';
     cvs.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;';
     container.style.position = 'relative';
-    // 主题重建等场景会再次 new Overlay：destroy 旧实例（RO）并清掉旧 canvas，避免重影/泄漏
     const prev = Overlay._byContainer.get(container);
     if (prev) prev.destroy();
     container.querySelectorAll('canvas.bz-overlay').forEach((e) => e.remove());
@@ -90,7 +84,6 @@ window.Overlay = class Overlay {
 
     const rerender = () => this.redraw();
     chart.timeScale().subscribeVisibleLogicalRangeChange(rerender);
-    // 拖拽绘制（框选/涂鸦）：mousedown 在容器，move/up 挂 window（拖出画布也能收尾）
     this._hDown = (e) => this._onDown(e);
     this._hMove = (e) => this._onMove(e);
     this._hUp = (e) => this._onUp(e);
@@ -102,7 +95,6 @@ window.Overlay = class Overlay {
     Overlay._byContainer.set(container, this);
   }
 
-  /** 释放 ResizeObserver（主题重建时由下一个实例的构造调用） */
   destroy() {
     if (this._ro) this._ro.disconnect();
     if (this._hDown) this.container.removeEventListener('mousedown', this._hDown);
@@ -111,17 +103,28 @@ window.Overlay = class Overlay {
     Overlay._byContainer.delete(this.container);
   }
 
-  /* 各工具需要的点击数 */
   static get NEED() { return { trend: 2, arrow: 2, hline: 1, fib: 2, channel: 3, rect: 2, text: 1 }; }
   static get FIB_RATIOS() { return ['0', '0.236', '0.382', '0.5', '0.618', '0.786', '1']; }
 
+  /** 获取主图绘图区宽度（扣除右侧 62px 价格坐标轴，防止画线和标签侵入价格刻度） */
+  _plotWidth(fullW) {
+    let psW = 62;
+    try {
+      const w = this.chart && this.chart.priceScale && this.chart.priceScale('right').width();
+      if (w && w > 0) psW = w;
+    } catch { /* fallback 62 */ }
+    return Math.max(0, fullW - psW);
+  }
+
   setBars(bars) { this.bars = bars || []; this.pts = []; this.redraw(); }
-  setLines(lines) {            // 外部装载（换标的/换主题重建）：撤销栈随之重置
+  setLines(lines) {
     this.lines = lines || [];
     this.pts = [];
     this.undoStack = [];
     this.redoStack = [];
+    this.selected = null;
     this.redraw();
+    this._notifyStyle();
   }
   setChan(chan) {
     this.chan = chan || { bis: [], zs: [], duans: [], divs: [] };
@@ -129,7 +132,6 @@ window.Overlay = class Overlay {
   }
   setMode(m) {
     const drag = (m === 'drect' || m === 'pen');
-    // 拖拽绘制时禁用图表平移/缩放，避免和图表手势打架
     this.chart.applyOptions({ handleScroll: !drag, handleScale: !drag });
     this.container.style.cursor = m === 'none' ? '' : (m === 'select' ? 'default' : 'crosshair');
     if (m !== 'select') this.selected = null;
@@ -138,18 +140,38 @@ window.Overlay = class Overlay {
     this._drag = null;
     this.redraw();
     if (this.onModeChange) this.onModeChange(m);
+    this._notifyStyle();
+  }
+
+  /** 当前生效样式（供样式浮层高亮回显）：优先取选中线，否则取预设 */
+  getActiveStyle() {
+    if (this.selected != null && this.lines[this.selected]) {
+      return { ...this._st(this.lines[this.selected]), hasSelected: true };
+    }
+    const T = window.BzTheme.colors();
+    return {
+      color: this.style.color || T.trend,
+      width: this.style.width || 1.6,
+      dash: !!this.style.dash,
+      hasSelected: false,
+    };
+  }
+
+  _notifyStyle() {
+    if (this.onStyleChange) this.onStyleChange(this.getActiveStyle());
   }
 
   /** 样式：作用于「选中的线」，否则作为新画线默认样式 */
   setStyle(patch) {
     Object.assign(this.style, patch);
     if (this.selected != null && this.lines[this.selected]) {
-      this._pushUndo();                        // 先快照再改，撤销回到旧样式
+      this._pushUndo();
       const ln = this.lines[this.selected];
       ln.st = Object.assign({}, ln.st, patch);
       this.redraw();
       if (this.onChange) this.onChange();
     }
+    this._notifyStyle();
   }
 
   /** 删除选中的线（选择模式） */
@@ -160,6 +182,7 @@ window.Overlay = class Overlay {
     this.selected = null;
     this.redraw();
     if (this.onChange) this.onChange();
+    this._notifyStyle();
     return true;
   }
 
@@ -184,6 +207,8 @@ window.Overlay = class Overlay {
     const r = this.container.getBoundingClientRect();
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
+    const plotW = this._plotWidth(r.width);
+    if (x > plotW) return null;       // 点击在右侧价格轴上不触发画线拖拽
     const p = this.series.coordinateToPrice(y);
     const li = this.chart.timeScale().coordinateToLogical(x);
     if (p == null || li == null) return null;
@@ -197,23 +222,31 @@ window.Overlay = class Overlay {
     if (this.undoStack.length > 50) this.undoStack.shift();
     this.redoStack.length = 0;
   }
-  /** 撤销最近一次画线/删除/清空；有变更返回 true（调用方负责持久化） */
   undo() {
     if (!this.undoStack.length) return false;
     this.redoStack.push(this.lines.slice());
     this.lines = this.undoStack.pop();
+    this.selected = null;
     this.redraw();
+    this._notifyStyle();
     return true;
   }
   redo() {
     if (!this.redoStack.length) return false;
     this.undoStack.push(this.lines.slice());
     this.lines = this.redoStack.pop();
+    this.selected = null;
     this.redraw();
+    this._notifyStyle();
     return true;
   }
-  /** 清空（可撤销；区别于 setLines 的装载语义） */
-  clearAll() { this._pushUndo(); this.lines = []; this.redraw(); }
+  clearAll() {
+    this._pushUndo();
+    this.lines = [];
+    this.selected = null;
+    this.redraw();
+    this._notifyStyle();
+  }
 
   /** 日期 → 该周期最近(≤) bar 的逻辑索引；早于首根则 0 */
   _idxOfDate(d) {
@@ -301,7 +334,6 @@ window.Overlay = class Overlay {
   /** 图表点击：按当前模式处理画线/删除。返回是否变更了 lines。 */
   handleClick(param) {
     if (!param.point || param.time == null) return false;
-    // param.logical 可为浮点（点击落在两根 bar 之间），取最近 bar
     const li = Math.round(param.logical);
     if (!(li >= 0) || li >= this.bars.length) return false;
     const d = this.bars[li].d;
@@ -310,19 +342,26 @@ window.Overlay = class Overlay {
 
     if (this.mode === 'del') {
       const hit = this._hitTest(param.point.x, param.point.y);
-      if (hit >= 0) { this._pushUndo(); this.lines.splice(hit, 1); this.redraw(); return true; }
+      if (hit >= 0) {
+        this._pushUndo();
+        this.lines.splice(hit, 1);
+        this.selected = null;
+        this.redraw();
+        this._notifyStyle();
+        return true;
+      }
       return false;
     }
     if (this.mode === 'select') {
       const hit = this._hitTest(param.point.x, param.point.y);
       this.selected = hit >= 0 ? hit : null;
       this.redraw();
+      this._notifyStyle();
       return false;
     }
 
     const need = Overlay.NEED[this.mode];
     if (!need) return false;
-    // 磁吸（hline 任意价位、text 任意位置均不吸）
     if (this.mode !== 'hline' && this.mode !== 'text') {
       p = this._magnet(li, param.point.y) ?? p;
     }
@@ -338,7 +377,6 @@ window.Overlay = class Overlay {
     else if (this.mode === 'rect') ln = { type: 'rect', d1: a.d, p1: a.p, d2: b.d, p2: b.p };
     else if (this.mode === 'channel') ln = { type: 'channel', d1: a.d, p1: a.p, d2: b.d, p2: b.p, d3: c.d, p3: c.p };
     else if (this.mode === 'text') {
-      // 异步：对话框确认后才真正落线（onChange 通知持久化）
       this.pts = [];
       this.setMode('none');
       window.bzPrompt('标注文字：', '', (txt) => {
@@ -353,7 +391,7 @@ window.Overlay = class Overlay {
     }
     this.pts = [];
     if (ln) {
-      ln.st = { ...this.style };        // 落线时固化当前样式（null 字段按类型兜底）
+      ln.st = { ...this.style };
       this._pushUndo();
       this.lines.push(ln);
     }
@@ -361,19 +399,16 @@ window.Overlay = class Overlay {
     return !!ln;
   }
 
-  /** fib 档位价：r=0 在终点 B、r=1 在起点 A（TradingView 惯例） */
   _fibLevels(ln) {
     const range = ln.p2 - ln.p1;
     return Overlay.FIB_RATIOS.map((r) => ({ r, price: ln.p2 - range * Number(r) }));
   }
 
-  /** 通道：基线 (d1,p1)→(d2,p2) 在逻辑索引 li 处的价格 */
   _chanBaseAt(ln, li) {
     const i1 = this._idxOfDate(ln.d1), i2 = this._idxOfDate(ln.d2);
     if (i1 == null || i2 == null || i2 === i1) return (ln.p1 + ln.p2) / 2;
     return ln.p1 + (ln.p2 - ln.p1) * (li - i1) / (i2 - i1);
   }
-  /** 通道两边界在逻辑索引 li 处的价格（下边界 = 过第三点的平行线） */
   _chanLines(ln) {
     const i3 = this._idxOfDate(ln.d3);
     if (i3 == null) return null;
@@ -386,7 +421,6 @@ window.Overlay = class Overlay {
 
   _hitTest(px, py) {
     const R = 6;
-    const w = this.cvs.clientWidth;
     for (let i = this.lines.length - 1; i >= 0; i--) {
       const ln = this.lines[i];
       if (ln.type === 'hline') {
@@ -394,7 +428,7 @@ window.Overlay = class Overlay {
         if (y != null && Math.abs(py - y) <= R) return i;
       } else if (ln.type === 'fib') {
         const a = this._xy(ln.d1, ln.p1);
-        if (a && _distToSeg(px, py, a.x, a.y, a.x + 40, a.y) <= R) return i;   // 锚点附近
+        if (a && _distToSeg(px, py, a.x, a.y, a.x + 40, a.y) <= R) return i;
         for (const { price } of this._fibLevels(ln)) {
           const y = this.series.priceToCoordinate(price);
           if (y != null && Math.abs(py - y) <= R) return i;
@@ -415,7 +449,6 @@ window.Overlay = class Overlay {
         if (!a || !b) continue;
         const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
         const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
-        // 框选矩形：点框内或边框附近都算命中（便于选中改样式）
         if (px >= x0 - R && px <= x1 + R && py >= y0 - R && py <= y1 + R) return i;
       } else if (ln.type === 'pen') {
         const pts = (ln.pts || []).map((q) => this._xy(q.d, q.p)).filter(Boolean);
@@ -425,9 +458,9 @@ window.Overlay = class Overlay {
       } else if (ln.type === 'text') {
         const a = this._xy(ln.d1, ln.p1);
         if (!a) continue;
-        const tw = ln._w || (ln.txt ? ln.txt.length : 0) * 7 + 10;   // _w 由 redraw 缓存
+        const tw = ln._w || (ln.txt ? ln.txt.length : 0) * 7 + 10;
         if (px >= a.x - 3 && px <= a.x + tw && py >= a.y - 14 && py <= a.y + 4) return i;
-      } else {                    // trend
+      } else {
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
         if (a && b && _distToSeg(px, py, a.x, a.y, b.x, b.y) <= R) return i;
       }
@@ -449,6 +482,13 @@ window.Overlay = class Overlay {
     ctx.clearRect(0, 0, w, h);
     if (!this.bars.length) return;
     const T = window.BzTheme.colors();
+    const plotW = this._plotWidth(w);
+
+    // 裁剪绘图区：严禁画线或标签越过右侧价格轴边界
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, plotW, h);
+    ctx.clip();
 
     // ---- 缠论：中枢矩形 + 线段（下）+ 笔折线 + 背驰标记 ----
     const zs = this.chan.zs || [];
@@ -489,16 +529,16 @@ window.Overlay = class Overlay {
       ctx.stroke();
     }
     const divs = this.chan.divs || [];
-    ctx.font = '9px sans-serif';
+    ctx.font = '10px sans-serif';
     for (const dv of divs) {
       const a = this._xy(dv.t, dv.p);
       if (!a) continue;
       const top = dv.type === 'top';
       ctx.fillStyle = top ? T.up : T.down;
       ctx.beginPath();
-      if (top) {                  // 顶背驰：端点上方倒三角
+      if (top) {
         ctx.moveTo(a.x - 5, a.y - 8); ctx.lineTo(a.x + 5, a.y - 8); ctx.lineTo(a.x, a.y - 2);
-      } else {                    // 底背驰：端点下方正三角
+      } else {
         ctx.moveTo(a.x - 5, a.y + 8); ctx.lineTo(a.x + 5, a.y + 8); ctx.lineTo(a.x, a.y + 2);
       }
       ctx.closePath();
@@ -520,11 +560,12 @@ window.Overlay = class Overlay {
         const y = this.series.priceToCoordinate(ln.p1);
         if (y == null) continue;
         ctx.beginPath();
-        ctx.moveTo(0, y); ctx.lineTo(w, y);
+        ctx.moveTo(0, y); ctx.lineTo(plotW, y);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.font = '10px sans-serif';
-        ctx.fillText(String(Number(ln.p1).toFixed(2)), 4, y - 3);
+        ctx.font = '10px "JetBrains Mono", monospace';
+        const txt = String(Number(ln.p1).toFixed(2));
+        ctx.fillText(txt, 6, y - 4);
       } else if (ln.type === 'fib') {
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
         if (!a || !b) continue;
@@ -533,7 +574,7 @@ window.Overlay = class Overlay {
         ctx.beginPath();
         ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
         ctx.stroke();
-        ctx.font = '10px sans-serif';
+        ctx.font = '10px "JetBrains Mono", monospace';
         const x0 = Math.min(a.x, b.x);
         for (const { r, price } of this._fibLevels(ln)) {
           const y = this.series.priceToCoordinate(price);
@@ -541,12 +582,12 @@ window.Overlay = class Overlay {
           ctx.setLineDash([4, 3]);
           ctx.lineWidth = (r === '0.618' || r === '0.5') ? Math.max(1, st.width) : 1;
           ctx.beginPath();
-          ctx.moveTo(x0, y); ctx.lineTo(w, y);
+          ctx.moveTo(x0, y); ctx.lineTo(plotW, y);
           ctx.stroke();
           ctx.setLineDash([]);
-          const label = `${r} ${price.toFixed(2)}`;
+          const label = `${r} (${price.toFixed(2)})`;
           const tw = ctx.measureText(label).width;
-          ctx.fillText(label, w - tw - 4, y - 3);
+          ctx.fillText(label, Math.max(x0 + 4, plotW - tw - 6), y - 3);
         }
       } else if (ln.type === 'channel') {
         const L = this._chanLines(ln);
@@ -607,10 +648,10 @@ window.Overlay = class Overlay {
         if (!a) continue;
         ctx.font = '11px sans-serif';
         const tw = ctx.measureText(ln.txt).width;
-        ln._w = tw + 8;                    // 命中检测复用真实宽度（中英文混排估算不准）
+        ln._w = tw + 8;
         ctx.fillStyle = T.panel;
         ctx.save();
-        ctx.globalAlpha = 0.85;
+        ctx.globalAlpha = 0.88;
         if (ctx.roundRect) {
           ctx.beginPath();
           ctx.roundRect(a.x - 3, a.y - 14, tw + 8, 18, 3);
@@ -632,7 +673,6 @@ window.Overlay = class Overlay {
         ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
         ctx.stroke();
         ctx.setLineDash([]);
-        // 实心三角箭头，方向由第二点决定
         const ang = Math.atan2(b.y - a.y, b.x - a.x);
         const L = Math.max(8, st.width * 5);
         const W = L * 0.55;
@@ -644,7 +684,7 @@ window.Overlay = class Overlay {
           b.y - L * Math.sin(ang) + W * Math.cos(ang));
         ctx.closePath();
         ctx.fill();
-      } else {                    // trend
+      } else {
         const a = this._xy(ln.d1, ln.p1), b = this._xy(ln.d2, ln.p2);
         if (!a || !b) continue;
         ctx.beginPath();
@@ -659,12 +699,12 @@ window.Overlay = class Overlay {
         }
       }
 
-      // 选中态：锚点手柄（选择模式下点中的线）
+      // 选中态：锚点手柄
       if (hl) {
         const anchors = [];
         if (ln.type === 'hline') {
           const y = this.series.priceToCoordinate(ln.p1);
-          if (y != null) anchors.push({ x: 20, y });
+          if (y != null) anchors.push({ x: 24, y }, { x: Math.max(40, plotW - 24), y });
         } else if (ln.type === 'pen') {
           for (const q of [ln.pts && ln.pts[0], ln.pts && ln.pts[ln.pts.length - 1]]) {
             const a = q && this._xy(q.d, q.p);
@@ -744,6 +784,8 @@ window.Overlay = class Overlay {
         }
       }
     }
+
+    ctx.restore();
   }
 };
 

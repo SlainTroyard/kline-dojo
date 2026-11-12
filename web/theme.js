@@ -1,9 +1,18 @@
-/* 多主题（K线道场）：明/暗/白蓝/深蓝
+/* 多主题与全局基础存储（K线道场）：暗黑 / 明亮 / 米色 / 白蓝 / 深蓝
  * CSS 变量在 style.css 按 [data-theme] 切换；图表/canvas 颜色由本模块提供，
  * 主题切换时通知所有监听方重建图表。记忆在 localStorage(bz_theme)。
+ * 同时提供统一的均线定义 (MA_DEFS) 与跨页签同步的自选股存储 (BzWatchlist)。
  */
 'use strict';
 window.BzTheme = (() => {
+  const MA_DEFS = [
+    { p: 5, color: '#f0b90b' }, { p: 10, color: '#4a90e2' },
+    { p: 13, color: '#22c1c3' }, { p: 20, color: '#c77dff' },
+    { p: 21, color: '#ff6b9d' }, { p: 40, color: '#9ccc65' },
+    { p: 60, color: '#ff8c42' }, { p: 120, color: '#8892a6' },
+  ];
+  const MA_DEFAULT = [5, 10, 20, 60];
+
   const THEMES = {
     dark: {
       label: '暗黑',
@@ -12,6 +21,8 @@ window.BzTheme = (() => {
       up: '#e0483e', down: '#1fa06b', accent: '#f0b90b', onAccent: '#1a1a05',
       blue: '#4a90e2', trend: '#4a90e2', hline: '#e0483e',
       fib: '#c77dff', channel: '#ffa94d', rect: '#8892a6', note: '#f0b90b',
+      bollMid: '#f0b90b', bollBand: '#8892a6',
+      kdjK: '#f0b90b', kdjD: '#4a90e2', kdjJ: '#c77dff',
       chanBi: '#00e5ff', chanZs: 'rgba(240,185,11,.08)', chanZsBorder: 'rgba(240,185,11,.55)',
       chanDuan: '#ff8c42',
       volUp: 'rgba(224,72,62,.45)', volDown: 'rgba(31,160,107,.45)',
@@ -25,10 +36,12 @@ window.BzTheme = (() => {
       up: '#d9382e', down: '#178f5f', accent: '#c8860a', onAccent: '#fffaf0',
       blue: '#2f6fd0', trend: '#2f6fd0', hline: '#d9382e',
       fib: '#7c3aed', channel: '#b45309', rect: '#6a737d', note: '#92660a',
+      bollMid: '#b47400', bollBand: '#64748b',
+      kdjK: '#b47400', kdjD: '#2f6fd0', kdjJ: '#7c3aed',
       chanBi: '#0087a8', chanZs: 'rgba(200,134,10,.10)', chanZsBorder: 'rgba(200,134,10,.6)',
       chanDuan: '#c2410c',
-      volUp: 'rgba(217,56,46,.4)', volDown: 'rgba(23,143,95,.4)',
-      macdUp: 'rgba(217,56,46,.65)', macdDown: 'rgba(23,143,95,.65)',
+      volUp: 'rgba(217,56,46,.42)', volDown: 'rgba(23,143,95,.42)',
+      macdUp: 'rgba(217,56,46,.68)', macdDown: 'rgba(23,143,95,.68)',
       toastBg: '#fdecee', toastText: '#b3271d', toastOkBg: '#e8f7f0', toastOkText: '#0e7a52',
     },
     cream: {
@@ -38,10 +51,12 @@ window.BzTheme = (() => {
       up: '#c73e3a', down: '#157f52', accent: '#b8860b', onAccent: '#fffaf0',
       blue: '#3a6ea5', trend: '#3a6ea5', hline: '#c73e3a',
       fib: '#7c5cd6', channel: '#a16207', rect: '#857c66', note: '#8a6d0a',
+      bollMid: '#9a6b00', bollBand: '#78705e',
+      kdjK: '#9a6b00', kdjD: '#3a6ea5', kdjJ: '#7c5cd6',
       chanBi: '#00798c', chanZs: 'rgba(184,134,11,.10)', chanZsBorder: 'rgba(184,134,11,.6)',
       chanDuan: '#c2540a',
-      volUp: 'rgba(199,62,58,.4)', volDown: 'rgba(21,127,82,.4)',
-      macdUp: 'rgba(199,62,58,.65)', macdDown: 'rgba(21,127,82,.65)',
+      volUp: 'rgba(199,62,58,.42)', volDown: 'rgba(21,127,82,.42)',
+      macdUp: 'rgba(199,62,58,.68)', macdDown: 'rgba(21,127,82,.68)',
       toastBg: '#f8e8e6', toastText: '#a3271d', toastOkBg: '#e6f2ea', toastOkText: '#0e7a52',
     },
     blue: {
@@ -51,10 +66,12 @@ window.BzTheme = (() => {
       up: '#d9382e', down: '#178f5f', accent: '#1e6fd9', onAccent: '#ffffff',
       blue: '#1e6fd9', trend: '#1e6fd9', hline: '#d9382e',
       fib: '#6d5bd0', channel: '#a16207', rect: '#5c7189', note: '#8a6d0a',
+      bollMid: '#b47400', bollBand: '#5c7189',
+      kdjK: '#b47400', kdjD: '#1e6fd9', kdjJ: '#6d5bd0',
       chanBi: '#0087a8', chanZs: 'rgba(30,111,217,.10)', chanZsBorder: 'rgba(30,111,217,.55)',
       chanDuan: '#c2540a',
-      volUp: 'rgba(217,56,46,.4)', volDown: 'rgba(23,143,95,.4)',
-      macdUp: 'rgba(217,56,46,.65)', macdDown: 'rgba(23,143,95,.65)',
+      volUp: 'rgba(217,56,46,.42)', volDown: 'rgba(23,143,95,.42)',
+      macdUp: 'rgba(217,56,46,.68)', macdDown: 'rgba(23,143,95,.68)',
       toastBg: '#fdf0f1', toastText: '#b3271d', toastOkBg: '#e8f7f0', toastOkText: '#0e7a52',
     },
     navy: {
@@ -64,6 +81,8 @@ window.BzTheme = (() => {
       up: '#ff5d52', down: '#2ecc8f', accent: '#4da3ff', onAccent: '#06122b',
       blue: '#4da3ff', trend: '#4da3ff', hline: '#ff5d52',
       fib: '#b98cff', channel: '#f0b35c', rect: '#7186a3', note: '#ffd24d',
+      bollMid: '#ffd24d', bollBand: '#7186a3',
+      kdjK: '#ffd24d', kdjD: '#4da3ff', kdjJ: '#b98cff',
       chanBi: '#00e5ff', chanZs: 'rgba(77,163,255,.10)', chanZsBorder: 'rgba(77,163,255,.55)',
       chanDuan: '#ff8c42',
       volUp: 'rgba(255,93,82,.45)', volDown: 'rgba(46,204,143,.45)',
@@ -95,11 +114,66 @@ window.BzTheme = (() => {
     current = name;
     localStorage.setItem('bz_theme', name);
     document.documentElement.setAttribute('data-theme', name);
-    if (!silent) listeners.forEach((f) => { try { f(name); } catch (e) { console.error('theme listener error', e); /* 单个失败不阻断 */ } });
+    if (!silent) listeners.forEach((f) => { try { f(name); } catch (e) { console.error('theme listener error', e); } });
   }
 
   function onChange(f) { listeners.push(f); }
 
   apply(current, true);
-  return { get, colors, apply, onChange, list, maColor };
+  return { get, colors, apply, onChange, list, maColor, MA_DEFS, MA_DEFAULT };
+})();
+
+/* 统一自选股存储：消除训练页与行情板双份内存副本互相覆盖的问题 */
+window.BzWatchlist = (() => {
+  const KEY = 'bz_watchlist';
+  const MAX = 60;
+  const subs = [];
+
+  function load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(KEY) || '[]');
+      return Array.isArray(raw) ? raw.filter((x) => x && x.code) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function save(list) {
+    localStorage.setItem(KEY, JSON.stringify(list));
+    subs.forEach((fn) => { try { fn(list); } catch (e) { console.error('watchlist sub error', e); } });
+  }
+
+  function has(code) {
+    return load().some((w) => w.code === code);
+  }
+
+  function add(code, name) {
+    const list = load();
+    if (list.some((w) => w.code === code)) return list;
+    const cleanName = String(name || code).replace(/\s+\d{6}$/, '');
+    list.unshift({ code, name: cleanName });
+    const next = list.slice(0, MAX);
+    save(next);
+    return next;
+  }
+
+  function remove(code) {
+    const list = load();
+    const next = list.filter((w) => w.code !== code);
+    if (next.length !== list.length) save(next);
+    return next;
+  }
+
+  function onChange(fn) {
+    subs.push(fn);
+  }
+
+  window.addEventListener('storage', (e) => {
+    if (e.key === KEY) {
+      const list = load();
+      subs.forEach((fn) => { try { fn(list); } catch { /* ignore */ } });
+    }
+  });
+
+  return { load, save, has, add, remove, onChange };
 })();

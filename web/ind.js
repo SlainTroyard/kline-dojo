@@ -105,7 +105,7 @@ window.Ind = (() => {
       if (k !== curKey) {
         if (cur) out.push(cur);
         curKey = k;
-        cur = { d: b.d, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v };  // 该周期首个交易日为 time
+        cur = { d: b.d, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v, t: b.t };  // 该周期首个交易日为 time
       } else {
         if (b.h > cur.h) cur.h = b.h;
         if (b.l < cur.l) cur.l = b.l;
