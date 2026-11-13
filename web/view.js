@@ -11,6 +11,11 @@
  */
 'use strict';
 
+/* 分钟 bar 的 d 是北京时间墙上时间，lightweight-charts 却按 UTC 渲染数字时间。
+ * 解析时补 Z，把墙上时间当成 UTC，坐标轴/十字光标便显示 24 小时制的北京时间；
+ * 这样也避免浏览器时区不是 UTC+8 时整体偏移。 */
+const barTs = (s) => Math.floor(Date.parse(s.replace(' ', 'T') + 'Z') / 1000);
+
 window.BzChartKit = (() => {
   const AXIS_W = 62;
   const DRAW_COLORS = ['#f0b90b', '#e0483e', '#4a90e2', '#1fa06b', '#c77dff', '#e6ebf4'];
@@ -795,8 +800,13 @@ window.createBoard = function createBoard(cfg) {
 
   function syncDrawBtns() {
     if (!wb || !wb.overlay) return;
+    const mode = wb.overlay.mode, sticky = !!wb.overlay.sticky;
     root.querySelectorAll('[data-draw]').forEach((x) => {
-      x.classList.toggle('on', x.dataset.draw === wb.overlay.mode);
+      const on = x.dataset.draw === mode;
+      const cycle = on && mode !== 'select' && mode !== 'del';
+      x.classList.toggle('on', on);
+      x.classList.toggle('draw-once', cycle && !sticky);
+      x.classList.toggle('draw-lock', cycle && sticky);
     });
   }
 
@@ -861,9 +871,23 @@ window.createBoard = function createBoard(cfg) {
     const cnt = isMin ? `${pn} ${rawBars.length} 根（限最近）`
       : period === 'D' ? `日K ${bars.length} 根`
         : `日线 ${rawBars.length} 根 · ${pn} ${bars.length} 根`;
-    $('title').textContent =
-      `${curName}（${scope} · ${cnt}` +
-      (cfg.mode === 'market' && asof ? ` · 数据截至 ${asof.slice(0, 10)}${isMin ? ' ' + asof.slice(11, 16) : ''}` : '') + `）`;
+    // 分钟数据的最新时间戳是「当前 bar 的结束标签」，盘中会大于墙上时间；
+    // 标成「最新 bar」并注明进行中，避免误读成未来数据。
+    let liveTxt = '';
+    if (cfg.mode === 'market' && asof) {
+      if (isMin) {
+        const asofHM = asof.slice(11, 16);
+        const nd = new Date(Date.now() + 8 * 3600 * 1000);
+        const p2 = (n) => String(n).padStart(2, '0');
+        const today = `${nd.getUTCFullYear()}-${p2(nd.getUTCMonth() + 1)}-${p2(nd.getUTCDate())}`;
+        const nowHM = `${p2(nd.getUTCHours())}:${p2(nd.getUTCMinutes())}`;
+        const forming = asof.slice(0, 10) === today && asofHM >= nowHM;
+        liveTxt = ` · 最新 ${pn} ${asofHM}${forming ? '（进行中）' : ''}`;
+      } else {
+        liveTxt = ` · 数据截至 ${asof.slice(0, 10)}`;
+      }
+    }
+    $('title').textContent = `${curName}（${scope} · ${cnt}${liveTxt}）`;
   }
 
   /* ---------------- 盘中实时 K 线 ---------------- */
@@ -899,7 +923,7 @@ window.createBoard = function createBoard(cfg) {
       const [d, o, h, l, c, v] = row;
       if (!d || !(o > 0) || !(h > 0) || !(l > 0) || !(c > 0)) continue;
       const nb = { d, o: +o, h: +h, l: +l, c: +c, v: +v };
-      if (d.length > 10) nb.t = Math.floor(Date.parse(d.replace(' ', 'T')) / 1000);
+      if (d.length > 10) nb.t = barTs(d);
       const i = idx.get(d);
       if (i != null) {
         if (sameBar(rawBars[i], nb)) continue;
@@ -931,8 +955,21 @@ window.createBoard = function createBoard(cfg) {
       if (seq !== selSeq || key !== curKey || d.error) return;
       if (d.asof) asof = d.asof;
       if (typeof d.trading === 'boolean') liveFast = d.trading;
+      // 追加新 bar 时若视图停在右缘，跟着右移同样的根数；
+      // 否则新 bar 会落在视口外，看起来像行情没跟上。
+      const ts = wb && wb.chart ? wb.chart.timeScale() : null;
+      const beforeLen = curBars().length;
+      const vr0 = ts ? ts.getVisibleLogicalRange() : null;
+      const atRight = !!(vr0 && beforeLen && vr0.to >= beforeLen - 2);
       const changed = minute ? mergeMinuteLive(d.bars) : mergeDailyLive(d.bar);
-      if (changed) renderAll(true);
+      if (changed) {
+        renderAll(true);
+        const delta = curBars().length - beforeLen;
+        if (atRight && delta > 0 && ts) {
+          const vr = ts.getVisibleLogicalRange();
+          if (vr) ts.setVisibleLogicalRange({ from: vr.from + delta, to: vr.to + delta });
+        }
+      }
     } catch { /* 上游抖动忽略 */ }
     finally { liveBusy = false; }
   }
@@ -1000,7 +1037,6 @@ window.createBoard = function createBoard(cfg) {
         el.querySelector('.d').textContent = onDel ? it.key : (extra || '');
         el.onclick = () => {
           if (extra === '＋') addToWatchlist(it);
-          else if (extra === '✓') removeFromWatchlist(it.key);
           else select(it.key);
         };
         if (onDel) {
@@ -1100,6 +1136,8 @@ window.createBoard = function createBoard(cfg) {
   function addToWatchlist(it) {
     const code = it.key;
     window.BzWatchlist.add(code, it.name);
+    const s = $('search');
+    if (s.value) s.value = '';
     loadList();
     select(code);
     refreshQuotes();
@@ -1116,6 +1154,14 @@ window.createBoard = function createBoard(cfg) {
   let selSeq = 0;
 
   async function select(key) {
+    // 从搜索结果点选后回到完整自选列表，避免左侧一直停在搜索结果
+    if (cfg.mode === 'market') {
+      const s = $('search');
+      if (s.value) {
+        s.value = '';
+        renderList();
+      }
+    }
     curKey = key;
     const seq = ++selSeq;
     const it = insts.find((x) => x.key === key);
@@ -1129,7 +1175,7 @@ window.createBoard = function createBoard(cfg) {
       asof = d.asof || '';
       rawBars = d.bars.map((b) => ({
         d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5],
-        t: b[0].length > 10 ? Math.floor(Date.parse(b[0].replace(' ', 'T')) / 1000) : null,
+        t: b[0].length > 10 ? barTs(b[0]) : null,
       }));
       wb.overlay.setLines(loadLines());
       renderAll();
@@ -1226,10 +1272,10 @@ window.createBoard = function createBoard(cfg) {
     });
 
     root.querySelectorAll('[data-draw]').forEach((b) => {
+      if (!b.title.includes('单击单次')) b.title += '（单击单次 / 再点持续 / 第三次取消）';
       b.onclick = () => {
         if (!wb || !wb.overlay) return;
-        const m = b.dataset.draw;
-        wb.overlay.setMode(wb.overlay.mode === m ? 'none' : m);
+        wb.overlay.toggleMode(b.dataset.draw);
       };
     });
 

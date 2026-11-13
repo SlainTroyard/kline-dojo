@@ -12,6 +12,9 @@
  */
 'use strict';
 
+// 可循环「单次 → 持续 → 取消」的绘图工具；select/del 不参与循环
+const DRAW_TOOLS = new Set(['trend', 'arrow', 'hline', 'fib', 'channel', 'rect', 'drect', 'pen', 'text']);
+
 /* 轻量输入对话框（主题化 CSS 类，替代原生 prompt——嵌入式 webview 不支持原生弹窗） */
 window.bzPrompt = (msg, def, cb) => {
   const old = document.getElementById('bz-prompt');
@@ -64,6 +67,8 @@ window.Overlay = class Overlay {
     this.lines = [];           // 用户画线
     this.chan = { bis: [], zs: [], duans: [], divs: [] };
     this.mode = 'none';        // none | trend | arrow | hline | fib | channel | rect | drect | pen | text | select | del
+    this.sticky = false;       // true=持续绘制（完成一次后仍保持当前工具）
+    this._lastSingle = null;   // 刚用过一次单次工具：下次点同一按钮直接进持续
     this.pts = [];             // 多点工具已落点 [{d, p}]
     this.style = { color: null, width: null, dash: null };    // 新画线默认样式（null=按类型取主题默认）
     this.selected = null;      // 选择模式下选中的线下标
@@ -123,6 +128,7 @@ window.Overlay = class Overlay {
     this.undoStack = [];
     this.redoStack = [];
     this.selected = null;
+    this._lastSingle = null;
     this.redraw();
     this._notifyStyle();
   }
@@ -130,17 +136,47 @@ window.Overlay = class Overlay {
     this.chan = chan || { bis: [], zs: [], duans: [], divs: [] };
     this.redraw();
   }
-  setMode(m) {
+  setMode(m, sticky = false) {
     const drag = (m === 'drect' || m === 'pen');
     this.chart.applyOptions({ handleScroll: !drag, handleScale: !drag });
     this.container.style.cursor = m === 'none' ? '' : (m === 'select' ? 'default' : 'crosshair');
     if (m !== 'select') this.selected = null;
     this.mode = m;
+    this.sticky = !!sticky && DRAW_TOOLS.has(m);
+    this._lastSingle = null;
     this.pts = [];
     this._drag = null;
     this.redraw();
-    if (this.onModeChange) this.onModeChange(m);
+    if (this.onModeChange) this.onModeChange(m, this.sticky);
     this._notifyStyle();
+  }
+
+  /** 工具按钮三态：第一次单次 → 第二次持续 → 第三次取消。
+   *  select/del 仍是普通开关；切换工具时从单次开始。
+   *  单次画完后按钮会退出，但记住该工具：再点一次直接进持续。 */
+  toggleMode(m) {
+    if (!DRAW_TOOLS.has(m)) {
+      this.setMode(this.mode === m ? 'none' : m);
+      return;
+    }
+    if (this.mode !== m) {
+      this.setMode(m, this._lastSingle === m);
+      return;
+    }
+    if (!this.sticky) this.setMode(m, true);
+    else this.setMode('none');
+  }
+
+  /** 完成一次绘制：持续模式留在当前工具，单次模式自动退出 */
+  _finishMode() {
+    if (this.sticky) {
+      this.pts = [];
+      this.redraw();
+      return;
+    }
+    const done = this.mode;
+    this.setMode('none');
+    this._lastSingle = done;
   }
 
   /** 当前生效样式（供样式浮层高亮回显）：优先取选中线，否则取预设 */
@@ -328,7 +364,7 @@ window.Overlay = class Overlay {
       this.redraw();
       if (this.onChange) this.onChange();
     }
-    this.setMode('none');
+    this._finishMode();
   }
 
   /** 图表点击：按当前模式处理画线/删除。返回是否变更了 lines。 */
@@ -378,7 +414,14 @@ window.Overlay = class Overlay {
     else if (this.mode === 'channel') ln = { type: 'channel', d1: a.d, p1: a.p, d2: b.d, p2: b.p, d3: c.d, p3: c.p };
     else if (this.mode === 'text') {
       this.pts = [];
-      this.setMode('none');
+      if (this.sticky) {
+        // 持续模式：保留文字工具，弹窗期间不会接收图表点击
+        this.redraw();
+      } else {
+        const done = this.mode;
+        this.setMode('none');
+        this._lastSingle = done;
+      }
       window.bzPrompt('标注文字：', '', (txt) => {
         if (txt) {
           this._pushUndo();
@@ -395,7 +438,7 @@ window.Overlay = class Overlay {
       this._pushUndo();
       this.lines.push(ln);
     }
-    this.setMode('none');
+    this._finishMode();
     return !!ln;
   }
 

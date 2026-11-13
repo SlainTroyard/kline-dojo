@@ -222,8 +222,13 @@
   /* ---------------- 训练图表工作台（复用 BzChartKit） ---------------- */
   function syncTrainDrawBtns() {
     if (!wb || !wb.overlay) return;
+    const mode = wb.overlay.mode, sticky = !!wb.overlay.sticky;
     document.querySelectorAll('[data-tdraw]').forEach((x) => {
-      x.classList.toggle('on', x.dataset.tdraw === wb.overlay.mode);
+      const on = x.dataset.tdraw === mode;
+      const cycle = on && mode !== 'select' && mode !== 'del';
+      x.classList.toggle('on', on);
+      x.classList.toggle('draw-once', cycle && !sticky);
+      x.classList.toggle('draw-lock', cycle && sticky);
     });
   }
 
@@ -1105,9 +1110,10 @@
     });
 
     document.querySelectorAll('[data-tdraw]').forEach((b) => {
+      if (!b.title.includes('单击单次')) b.title += '（单击单次 / 再点持续 / 第三次取消）';
       b.onclick = () => {
         if (!wb || !wb.overlay) return;
-        wb.overlay.setMode(wb.overlay.mode === b.dataset.tdraw ? 'none' : b.dataset.tdraw);
+        wb.overlay.toggleMode(b.dataset.tdraw);
       };
     });
     $('train-undo').onclick = () => { wb && wb.overlay && wb.overlay.undo(); };
