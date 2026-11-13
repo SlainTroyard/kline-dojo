@@ -1,8 +1,8 @@
-# 爆竹训练营 常驻服务（systemd user unit）
+# K线道场 常驻服务（systemd user unit）
 # 安装：
-#   cp baozhu.service baozhu-refresh.service baozhu-refresh.timer ~/.config/systemd/user/
+#   cp kline-dojo.service kline-dojo-refresh.service kline-dojo-refresh.timer ~/.config/systemd/user/
 #   systemctl --user daemon-reload
-#   systemctl --user enable --now baozhu.service baozhu-refresh.timer
+#   systemctl --user enable --now kline-dojo.service kline-dojo-refresh.timer
 [Unit]
 Description=KLineDojo · K线盘感训练 + 指数看板
 After=network-online.target

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""K线道场 KLineDojo——本地服务（原「爆竹训练营」）。
+"""K线道场 KLineDojo——本地服务。
 
 用法：
     .venv/bin/python server.py [--port 8870]
     .venv/bin/python server.py --selftest
 
 零第三方 Web 依赖：标准库 http.server 提供 静态页面(web/) + JSON API；
-行情数据读 data/market/（由 bz_update.py 用 baostock 从零建立并维护）。
+行情数据读 data/market/（由 dojo_update.py 用 baostock 从零建立并维护）。
 """
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-import bz_data  # noqa: E402
-import bz_index  # noqa: E402
-import bz_live  # noqa: E402
-import bz_quote  # noqa: E402
-import bz_session  # noqa: E402
+import dojo_data  # noqa: E402
+import dojo_index  # noqa: E402
+import dojo_live  # noqa: E402
+import dojo_quote  # noqa: E402
+import dojo_session  # noqa: E402
 
 WEB = ROOT / "web"
 RESULTS = ROOT / "data" / "results.jsonl"
@@ -94,7 +94,7 @@ def api_new(body: dict) -> dict:
     category = body.get("category", "stock")
     if category not in ("stock", "etf", "limit", "custom", "index"):
         raise ValueError("category 必须是 stock / etf / limit / custom / index")
-    public, secret = bz_session.new_session(category, body.get("params") or {})
+    public, secret = dojo_session.new_session(category, body.get("params") or {})
     with LOCK:
         SESSIONS[public["sid"]] = secret
     return public
@@ -206,7 +206,7 @@ def start_index_refresher() -> None:
 
     def run():
         try:
-            bz_index.refresh_all(log=_idx_log)
+            dojo_index.refresh_all(log=_idx_log)
         except Exception as e:  # noqa: BLE001
             _idx_log(f"[index] 后台刷新异常: {e}")
 
@@ -222,7 +222,7 @@ _update_proc = None
 
 
 def start_market_update() -> dict:
-    """后台跑 bz_update.py --update（增量+新股）；完成后清 bz_data 缓存让新数据可见。"""
+    """后台跑 dojo_update.py --update（增量+新股）；完成后清 dojo_data 缓存让新数据可见。"""
     global _update_proc
     if _update_proc and _update_proc.poll() is None:
         return {"running": True, "started": False}
@@ -234,13 +234,13 @@ def start_market_update() -> dict:
     with UPDATE_LOG.open("ab") as lf:
         lf.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} 页面触发 ====\n".encode("utf-8"))
         _update_proc = subprocess.Popen(
-            [str(VENV_PY), str(ROOT / "bz_update.py"), "--update"],
+            [str(VENV_PY), str(ROOT / "dojo_update.py"), "--update"],
             stdout=lf, stderr=subprocess.STDOUT, cwd=str(ROOT))
 
     def watch():
         _update_proc.wait()
         with LOCK:
-            for fn in (bz_data.daily, bz_data.instruments, bz_data.names, bz_data._codes):
+            for fn in (dojo_data.daily, dojo_data.instruments, dojo_data.names, dojo_data._codes):
                 fn.cache_clear()
 
     threading.Thread(target=watch, daemon=True, name="market-update").start()
@@ -260,17 +260,17 @@ def market_update_status() -> dict:
 # ----------------------------------------------------------- market kline ----
 
 def market_kline(code: str, freq: str, adj: str) -> dict:
-    """行情页 K 线。注意 bz_data.daily/mins_bars 返回的是 lru_cache 共享对象，
+    """行情页 K 线。注意 dojo_data.daily/mins_bars 返回的是 lru_cache 共享对象，
     前复权必须先在副本上计算——原地改列会让缓存里的原始价随请求次数反复缩水。"""
-    code = bz_data.normalize_code(code) or ""
+    code = dojo_data.normalize_code(code) or ""
     if not code:
         raise ValueError("未知代码")
-    inst = bz_data.instruments()
+    inst = dojo_data.instruments()
     nrow = inst[inst["code"] == code]
     name = str(nrow.iloc[0]["name"]) if len(nrow) else code
     if freq in ("5min", "30min", "1min", "15min", "60min"):
-        df = bz_data.mins_bars(code, freq)
-        if freq not in bz_data.mins_freqs(code) or not len(df):
+        df = dojo_data.mins_bars(code, freq)
+        if freq not in dojo_data.mins_freqs(code) or not len(df):
             raise ValueError(f"{code} 无 {freq} 分钟数据")
         df = df.tail(4000).copy()                # 分钟限最近 4000 根（全史太重）
         fac = df["adj_factor"].to_numpy()
@@ -284,7 +284,7 @@ def market_kline(code: str, freq: str, adj: str) -> dict:
             for t in df.itertuples()]
         asof = str(df["trade_time"].iloc[-1])
     else:
-        df = bz_data.daily(bz_data.kind_of(code), code)
+        df = dojo_data.daily(dojo_data.kind_of(code), code)
         if not len(df):
             raise ValueError(f"{code} 无日线数据")
         df = df.copy()                           # 缓存只读，复权在副本上做
@@ -378,22 +378,22 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/search":
             from urllib.parse import parse_qs, urlparse
             q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0]
-            return self._json({"items": bz_data.search(q)})
+            return self._json({"items": dojo_data.search(q)})
         if path == "/api/index/list":
-            return self._json({"instruments": bz_index.list_status()})
+            return self._json({"instruments": dojo_index.list_status()})
         if path == "/api/market/status":
             return self._json(market_update_status())
         if path == "/api/mins/coverage":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
             code = (q.get("code") or [""])[0].split(".")[0]
-            if not bz_data.mins_available():
+            if not dojo_data.mins_available():
                 return self._json({"available": False, "hint":
-                    "分钟数据未挂载：需自备数据目录并设 BZ_MINS_ROOT（见 README「分钟线」小节）"})
-            if not bz_data.normalize_code(code):
+                    "分钟数据未挂载：需自备数据目录并设 DOJO_MINS_ROOT（见 README「分钟线」小节）"})
+            if not dojo_data.normalize_code(code):
                 return self._json({"error": f"未知代码 {code}"}, 404)
             return self._json({"available": True, "code": code,
-                               "freqs": bz_data.mins_coverage(code)})
+                               "freqs": dojo_data.mins_coverage(code)})
         if path == "/api/mins/kline":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
@@ -402,11 +402,11 @@ class Handler(BaseHTTPRequestHandler):
             start = (q.get("start") or [""])[0]
             end = (q.get("end") or [""])[0]
             limit = max(1, min(60000, int((q.get("limit") or ["20000"])[0])))
-            if not bz_data.mins_available():
+            if not dojo_data.mins_available():
                 return self._json({"error": "分钟数据未挂载（见 README「分钟线」小节）"}, 404)
-            if freq not in bz_data.mins_freqs(code):
+            if freq not in dojo_data.mins_freqs(code):
                 return self._json({"error": f"{code} 无 {freq} 数据"}, 404)
-            df = bz_data.mins_bars(code, freq)
+            df = dojo_data.mins_bars(code, freq)
             if start:
                 df = df[df["trade_time"] >= start]
             if end:
@@ -423,23 +423,23 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/market/live":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
-            code = bz_data.normalize_code((q.get("code") or [""])[0]) or ""
+            code = dojo_data.normalize_code((q.get("code") or [""])[0]) or ""
             freq = (q.get("freq") or ["D"])[0]
             if not code:
                 return self._json({"error": "未知代码"}, 404)
-            sym = bz_quote._prefix(code)          # 已含市场前缀（sh600519）
+            sym = dojo_quote._prefix(code)          # 已含市场前缀（sh600519）
             if freq in ("5m", "30m"):
-                return self._json(bz_live.minute_bars(sym, int(freq[:-1])))
-            return self._json(bz_live.daily_bar(sym, False))
+                return self._json(dojo_live.minute_bars(sym, int(freq[:-1])))
+            return self._json(dojo_live.daily_bar(sym, False))
         if path == "/api/index/live":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
             key = (q.get("key") or [""])[0]
-            if key not in bz_index.BY_KEY:
+            if key not in dojo_index.BY_KEY:
                 return self._json({"error": f"未知指数 {key}"}, 404)
             if not key.startswith(("sh", "sz")):
                 return self._json({"error": "海外指数暂不支持盘中实时"}, 404)
-            return self._json(bz_live.daily_bar(key, True))
+            return self._json(dojo_live.daily_bar(key, True))
         if path == "/api/market/quotes":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
@@ -448,8 +448,8 @@ class Handler(BaseHTTPRequestHandler):
             for c in raw.split(","):
                 c = c.strip().split(".")[0]
                 if c:
-                    codes.append(bz_data.normalize_code(c) or c)
-            qs, trading = bz_quote.quotes(codes)
+                    codes.append(dojo_data.normalize_code(c) or c)
+            qs, trading = dojo_quote.quotes(codes)
             return self._json({"quotes": qs, "trading": trading,
                                "asof": time.strftime("%H:%M:%S")})
         if path == "/api/index/kline":
@@ -457,7 +457,7 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             key = (q.get("key") or [""])[0]
             try:
-                return self._json(bz_index.kline_json(key, log=_idx_log))
+                return self._json(dojo_index.kline_json(key, log=_idx_log))
             except LookupError as e:
                 return self._json({"error": str(e)}, 404)
             except Exception as e:  # noqa: BLE001
@@ -482,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_finish(body))
             if path == "/api/index/refresh":
                 key = (body or {}).get("key")
-                out = bz_index.refresh(key, log=_idx_log) if key else bz_index.refresh_all(log=_idx_log)
+                out = dojo_index.refresh(key, log=_idx_log) if key else dojo_index.refresh_all(log=_idx_log)
                 return self._json({"ok": True, "result": out})
             if path == "/api/market/update":
                 return self._json(start_market_update())
@@ -528,7 +528,7 @@ def selftest(n_each: int = 12) -> int:
             params = ({"year_from": 2016, "year_to": 2025, "history": 100, "forward": 80}
                       if k % 2 else None)
             try:
-                pub, sec = bz_session.new_session(cat, params or {})
+                pub, sec = dojo_session.new_session(cat, params or {})
             except Exception as e:  # noqa: BLE001
                 check(False, f"{cat}#{k} 生成失败: {e}")
                 continue
@@ -563,7 +563,7 @@ def selftest(n_each: int = 12) -> int:
             # qfq 锚定窗口末根：末根复权 close == 原始 close
             if cat in ("stock", "limit", "etf"):
                 kind = "etfs" if cat == "etf" else "stocks"
-                raw = bz_data.daily(kind, sec["code"])
+                raw = dojo_data.daily(kind, sec["code"])
                 raw_last = float(raw[raw["date"] == sec["end_date"]].iloc[0]["close"])
                 check(abs(bars[-1]["c"] - raw_last) < 0.011,
                       f"{tag}: 末根价 {bars[-1]['c']} != 原始 {raw_last}")
@@ -595,7 +595,7 @@ def selftest(n_each: int = 12) -> int:
     ]
     for name, cat, params in cases:
         try:
-            pub, sec = bz_session.new_session(cat, params)
+            pub, sec = dojo_session.new_session(cat, params)
         except Exception as e:  # noqa: BLE001
             check(False, f"{name}: 生成失败: {e}")
             continue
@@ -620,7 +620,7 @@ def selftest(n_each: int = 12) -> int:
         if params.get("history") == 0:
             # 全史：窗口第 0 根 = 该标的数据第 0 根（从上市/指数起点起）；
             # 训练期外（远古历史）允许长断档与缺涨跌停价
-            import bz_data as _bd, bz_index as _bi
+            import dojo_data as _bd, dojo_index as _bi
             if cat == "index":
                 v0 = _bi.load(sec["code"])["date"].iloc[0]
             else:
@@ -639,19 +639,19 @@ def selftest(n_each: int = 12) -> int:
             check(cfg["board"] == "index" and sec["board"] == "index", f"{tag}: board 应为 index")
             check(all(b["up"] is None for b in bars), f"{tag}: 指数带涨跌停价")
         if cat == "custom":
-            valid = [bz_data.normalize_code(c) for c in params["codes"]]
+            valid = [dojo_data.normalize_code(c) for c in params["codes"]]
             check(sec["code"] in valid, f"{tag}: 自选抽了窗口外的代码")
         # 匿名性（字符串值包含判断，数值子串巧合不算）
         check(not leaks(pub, sec["code"], sec["start_date"]), f"{tag}: payload 泄露身份")
         print(f"selftest {name}: done")
 
-    # ---- 回归：行情前复权不得污染 bz_data 缓存（曾致早期价格随请求次数缩水）----
-    pool = [c for c in ("600118", "600519") if len(bz_data.daily("stocks", c))]
+    # ---- 回归：行情前复权不得污染 dojo_data 缓存（曾致早期价格随请求次数缩水）----
+    pool = [c for c in ("600118", "600519") if len(dojo_data.daily("stocks", c))]
     if not pool:
-        pool = [c for c in bz_data.codes("stocks")[:20] if len(bz_data.daily("stocks", c))]
+        pool = [c for c in dojo_data.codes("stocks")[:20] if len(dojo_data.daily("stocks", c))]
     if pool:
         code = pool[0]
-        raw = bz_data.daily("stocks", code)
+        raw = dojo_data.daily("stocks", code)
         c0 = float(raw["close"].iloc[0])
         f = raw["adj_factor"].to_numpy()
         expect = c0 * float(f[0]) / float(f[-1])
@@ -660,7 +660,7 @@ def selftest(n_each: int = 12) -> int:
         check(r1["bars"] == r2["bars"], "kline: 同一 qfq 请求两次结果不一致")
         check(abs(r1["bars"][0][4] - expect) < 1e-6,
               f"kline: 首根 qfq {r1['bars'][0][4]} != 理论值 {expect}")
-        check(float(bz_data.daily("stocks", code)["close"].iloc[0]) == c0,
+        check(float(dojo_data.daily("stocks", code)["close"].iloc[0]) == c0,
               "kline: qfq 请求改写了缓存原始价")
         r3 = market_kline(code, "D", "none")
         check(abs(r3["bars"][0][4] - c0) < 1e-6, "kline: 不复权首根被 qfq 污染")

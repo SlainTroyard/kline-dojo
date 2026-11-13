@@ -1,10 +1,30 @@
 /* 多主题与全局基础存储（K线道场）：暗黑 / 明亮 / 米色 / 白蓝 / 深蓝
  * CSS 变量在 style.css 按 [data-theme] 切换；图表/canvas 颜色由本模块提供，
- * 主题切换时通知所有监听方重建图表。记忆在 localStorage(bz_theme)。
- * 同时提供统一的均线定义 (MA_DEFS) 与跨页签同步的自选股存储 (BzWatchlist)。
+ * 主题切换时通知所有监听方重建图表。记忆在 localStorage(dojo_theme)。
+ * 同时提供统一的均线定义 (MA_DEFS) 与跨页签同步的自选股存储 (DojoWatchlist)。
  */
 'use strict';
-window.BzTheme = (() => {
+
+/* 旧版 bz_* localStorage 键一次性迁移到 dojo_*。
+ * 只复制不删除旧键，保留回滚余地；新键已存在时不覆盖。 */
+(() => {
+  try {
+    const legacy = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('bz_')) legacy.push(k);
+    }
+    for (const k of legacy) {
+      const nk = 'dojo_' + k.slice(3);
+      if (localStorage.getItem(nk) == null) {
+        const v = localStorage.getItem(k);
+        if (v != null) localStorage.setItem(nk, v);
+      }
+    }
+  } catch { /* localStorage 不可用或配额不足：继续用默认值 */ }
+})();
+
+window.DojoTheme = (() => {
   const MA_DEFS = [
     { p: 5, color: '#f0b90b' }, { p: 10, color: '#4a90e2' },
     { p: 13, color: '#22c1c3' }, { p: 20, color: '#c77dff' },
@@ -97,7 +117,7 @@ window.BzTheme = (() => {
     21: '#c2185b', 40: '#4f7f2f', 60: '#c25e00', 120: '#5f6b7a',
   };
 
-  const _saved = localStorage.getItem('bz_theme');
+  const _saved = localStorage.getItem('dojo_theme');
   let current = THEMES[_saved] ? _saved : 'dark';   // 坏值回退，避免 colors() 返回 undefined
   const listeners = [];
 
@@ -112,7 +132,7 @@ window.BzTheme = (() => {
   function apply(name, silent) {
     if (!THEMES[name]) return;
     current = name;
-    localStorage.setItem('bz_theme', name);
+    localStorage.setItem('dojo_theme', name);
     document.documentElement.setAttribute('data-theme', name);
     if (!silent) listeners.forEach((f) => { try { f(name); } catch (e) { console.error('theme listener error', e); } });
   }
@@ -124,8 +144,8 @@ window.BzTheme = (() => {
 })();
 
 /* 统一自选股存储：消除训练页与行情板双份内存副本互相覆盖的问题 */
-window.BzWatchlist = (() => {
-  const KEY = 'bz_watchlist';
+window.DojoWatchlist = (() => {
+  const KEY = 'dojo_watchlist';
   const MAX = 60;
   const subs = [];
 

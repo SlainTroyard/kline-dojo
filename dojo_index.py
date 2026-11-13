@@ -1,6 +1,6 @@
 """指数日线缓存层（腾讯 ifzq 为主，纳指100 走 Yahoo）。
 
-- 缓存存本项目 data/index/*.parquet（A股 11 指数另有 bz_update.py 的 baostock
+- 缓存存本项目 data/index/*.parquet（A股 11 指数另有 dojo_update.py 的 baostock
   合流追加，同文件 append-only）
 - 腾讯单次上限 800 根 → 按日期窗自适应翻页拿全历史（上证 1990 起、标普 1928 起）
 - 纳指100 腾讯无历史 → Yahoo chart 接口 ^NDX 一次拿全量
@@ -254,6 +254,6 @@ def kline_json(key: str, log=print) -> dict:
 
 if __name__ == "__main__":
     # 独立刷新入口（供 systemd timer / cron 使用）：
-    #   astock/.venv/bin/python bz_index.py
+    #   astock/.venv/bin/python dojo_index.py
     for r in refresh_all():
         print(r)

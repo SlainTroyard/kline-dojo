@@ -1,9 +1,9 @@
 """行情 parquet 只读层（K线道场）。
 
 数据根自动探测（优先级）：
-  1. 环境变量 BZ_MARKET_ROOT
-  2. 本项目 data/market/（bz_update.py 用 baostock 从零建立并维护的自有副本：
-     `bz_update.py --bootstrap` 建库，`--update` 日常增量）
+  1. 环境变量 DOJO_MARKET_ROOT（兼容旧 BZ_MARKET_ROOT）
+  2. 本项目 data/market/（dojo_update.py 用 baostock 从零建立并维护的自有副本：
+     `dojo_update.py --bootstrap` 建库，`--update` 日常增量）
 
 目录布局（serving 层）：
   daily/stocks/{code}.parquet   个股日线（含 adj_factor / 官方涨跌停价，或含 is_st）
@@ -21,7 +21,7 @@ import pandas as pd
 
 _ROOT = Path(__file__).resolve().parent
 _PQ_CANDIDATES = [
-    os.environ.get("BZ_MARKET_ROOT"),
+    os.environ.get("DOJO_MARKET_ROOT") or os.environ.get("BZ_MARKET_ROOT"),
     _ROOT / "data" / "market",
 ]
 PQ = Path(next(str(p) for p in _PQ_CANDIDATES if p and Path(p).exists()))
@@ -153,9 +153,9 @@ def search(q: str, limit: int = 20) -> list[dict]:
 # ------------------------------------------------------------- 分钟线 ----
 # 姊妹项目 astock 的 tushare stk_mins 副本，只读挂接、不随仓库分发（GitHub 用户
 # 默认无分钟数据，其余功能不受影响；想用分钟线见 README「分钟线」小节自行抓取）。
-# 探测顺序：BZ_MINS_ROOT → ../astock/data/parquet/mins → 无
+# 探测顺序：DOJO_MINS_ROOT（兼容旧 BZ_MINS_ROOT）→ ../astock/data/parquet/mins → 无
 _MINS_CANDIDATES = [
-    os.environ.get("BZ_MINS_ROOT"),
+    os.environ.get("DOJO_MINS_ROOT") or os.environ.get("BZ_MINS_ROOT"),
     _ROOT.parent / "astock" / "data" / "parquet" / "mins",
 ]
 MINS = next((Path(p) for p in _MINS_CANDIDATES if p and Path(p).exists()), None)

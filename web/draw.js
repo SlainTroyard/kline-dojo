@@ -16,22 +16,22 @@
 const DRAW_TOOLS = new Set(['trend', 'arrow', 'hline', 'fib', 'channel', 'rect', 'drect', 'pen', 'text']);
 
 /* 轻量输入对话框（主题化 CSS 类，替代原生 prompt——嵌入式 webview 不支持原生弹窗） */
-window.bzPrompt = (msg, def, cb) => {
-  const old = document.getElementById('bz-prompt');
+window.dojoPrompt = (msg, def, cb) => {
+  const old = document.getElementById('dojo-prompt');
   if (old) old.remove();
   const wrap = document.createElement('div');
-  wrap.id = 'bz-prompt';
-  wrap.className = 'bz-prompt-wrap';
+  wrap.id = 'dojo-prompt';
+  wrap.className = 'dojo-prompt-wrap';
   const box = document.createElement('div');
-  box.className = 'bz-prompt-box';
+  box.className = 'dojo-prompt-box';
   box.innerHTML =
-    `<div class="bz-prompt-title"></div>` +
-    `<input class="bz-prompt-input" type="text" autocomplete="off">` +
-    `<div class="bz-prompt-actions">` +
+    `<div class="dojo-prompt-title"></div>` +
+    `<input class="dojo-prompt-input" type="text" autocomplete="off">` +
+    `<div class="dojo-prompt-actions">` +
     `<button data-act="cancel" class="ghost">取消</button>` +
     `<button data-act="ok" class="primary">确定</button></div>`;
-  box.querySelector('.bz-prompt-title').textContent = msg;
-  const input = box.querySelector('.bz-prompt-input');
+  box.querySelector('.dojo-prompt-title').textContent = msg;
+  const input = box.querySelector('.dojo-prompt-input');
   input.value = def || '';
   wrap.appendChild(box);
   document.body.appendChild(wrap);
@@ -77,12 +77,12 @@ window.Overlay = class Overlay {
     this.redoStack = [];
 
     const cvs = document.createElement('canvas');
-    cvs.className = 'bz-overlay';
+    cvs.className = 'dojo-overlay';
     cvs.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;';
     container.style.position = 'relative';
     const prev = Overlay._byContainer.get(container);
     if (prev) prev.destroy();
-    container.querySelectorAll('canvas.bz-overlay').forEach((e) => e.remove());
+    container.querySelectorAll('canvas.dojo-overlay').forEach((e) => e.remove());
     container.appendChild(cvs);
     this.cvs = cvs;
     this.ctx = cvs.getContext('2d');
@@ -184,7 +184,7 @@ window.Overlay = class Overlay {
     if (this.selected != null && this.lines[this.selected]) {
       return { ...this._st(this.lines[this.selected]), hasSelected: true };
     }
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     return {
       color: this.style.color || T.trend,
       width: this.style.width || 1.6,
@@ -224,7 +224,7 @@ window.Overlay = class Overlay {
 
   /** 线样式合并：颜色/粗细/虚实（未设置取主题默认） */
   _st(ln) {
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     const def = {
       trend: T.trend, arrow: T.trend, hline: T.hline, fib: T.fib, channel: T.channel,
       rect: T.rect, drect: T.rect, pen: T.trend, text: T.note,
@@ -422,7 +422,7 @@ window.Overlay = class Overlay {
         this.setMode('none');
         this._lastSingle = done;
       }
-      window.bzPrompt('标注文字：', '', (txt) => {
+      window.dojoPrompt('标注文字：', '', (txt) => {
         if (txt) {
           this._pushUndo();
           this.lines.push({ type: 'text', d1: d, p1: p, txt: txt.slice(0, 40) });
@@ -524,7 +524,7 @@ window.Overlay = class Overlay {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
     if (!this.bars.length) return;
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     const plotW = this._plotWidth(w);
 
     // 裁剪绘图区：严禁画线或标签越过右侧价格轴边界

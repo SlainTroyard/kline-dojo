@@ -1,7 +1,6 @@
 # K线道场 KLineDojo · 盘感训练 + 指数看板（本地网页版）
 
 > 🥋 盘感是练出来的。真实历史行情双盲回放，逐根推演、模拟撮合，零风险磨手感。
-> （原名「爆竹训练营」，致敬启发的「爆竹K线训练助手」）
 
 四个模块：
 - **训练**：双盲 K 线训练——随机/自选抽股、逐根回放、模拟买卖
@@ -22,7 +21,7 @@
   开始页「📋 复盘历史」随时回看；支持单条删除/清空（中途结算的局标 ⏹）
 
 **数据依赖**：个股/ETF 行情存于 `data/market/`（本项目自有副本，**不入库**），由
-`bz_update.py` 用 **baostock**（免费无 token）**从零建立并维护**——全新克隆一条命令
+`dojo_update.py` 用 **baostock**（免费无 token）**从零建立并维护**——全新克隆一条命令
 `--bootstrap` 即可建库（含退市股）；海外指数走腾讯/Yahoo（`data/index/`）。
 详见「数据与更新」章节。
 
@@ -32,7 +31,7 @@
 cd kline-dojo
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-.venv/bin/python bz_update.py --bootstrap      # 从零建库，单进程限速约一晚（可中断重跑续传）
+.venv/bin/python dojo_update.py --bootstrap      # 从零建库，单进程限速约一晚（可中断重跑续传）
 .venv/bin/python server.py                     # 默认 8870 端口 → http://127.0.0.1:8870
 ```
 
@@ -40,7 +39,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 标的抓全史，几分钟即可开练；日后跑全量 `--bootstrap` 自动补齐其余，互不冲突）。
 
 Web 端零第三方依赖（标准库 http.server）；pandas/pyarrow 是服务端读 parquet 用，
-baostock 是更新器用。数据根默认 `data/market/`，可用 `BZ_MARKET_ROOT` 环境变量改指。
+baostock 是更新器用。数据根默认 `data/market/`，可用 `DOJO_MARKET_ROOT` 环境变量改指。
 
 自检（数据不变量断言，改完代码跑一下）：
 
@@ -106,6 +105,7 @@ baostock 是更新器用。数据根默认 `data/market/`，可用 `BZ_MARKET_RO
 
 右上角切换：暗黑（默认）/ 明亮 / **米色**（通达信经典暖米色）/ 白蓝 / 深蓝，共五套。
 CSS 变量 + 图表/画线 canvas 联动换肤，记忆在 localStorage。
+浏览器存储统一使用 `dojo_` 前缀；首次加载会自动把旧版 `bz_*` 键复制到新键（不删除旧键，保留回滚余地）。
 
 ## 结算与揭晓
 
@@ -168,7 +168,7 @@ CSS 变量 + 图表/画线 canvas 联动换肤，记忆在 localStorage。
 行情自有副本在 `data/market/`，每标的 12 列：serving 10 列 + **amount（成交额）** +
 **turnover_rate（换手率%）**，个股额外带 `is_st`（0/1）逐日列——量能数据完整。
 
-1. **从零建库 `bz_update.py --bootstrap`**：逐年（最后一个交易日）`query_all_stock`
+1. **从零建库 `dojo_update.py --bootstrap`**：逐年（最后一个交易日）`query_all_stock`
    快照并集发现全部标的——**含已退市股**（训练池无幸存者偏差；快照按日期过滤准确，
    实测 2000 年快照无 2001 年上市的茅台、有 2005/2010 年退市的齐鲁石化/邯郸钢铁）→
    **单进程串行**全量抓取（1990s 至今；baostock 每次调用 3-8s，全库约一晚）→
@@ -180,7 +180,7 @@ CSS 变量 + 图表/画线 canvas 联动换肤，记忆在 localStorage。
    等解除后重跑同一条命令即可接着上次的进度继续。实测数据质量：与 tushare 副本
    比对，价格逐位一致、涨跌停 100% 吻合、因子比例一致（绝对量纲两源各自恒定，
    前复权只用比例，不受影响）
-2. **日常维护 `bz_update.py`**（baostock 免费无 token，单进程限速）：
+2. **日常维护 `dojo_update.py`**（baostock 免费无 token，单进程限速）：
    - `--update`：增量追加全部在市标的（交易日历预判，无新交易日时全库零 API 调用、
      1 分钟跑完；有新交易日约 10-20 分钟）+ 自动发现回补新股/新 ETF +
      **A股 11 指数合流**到
@@ -196,7 +196,7 @@ CSS 变量 + 图表/画线 canvas 联动换肤，记忆在 localStorage。
 
 - 本地存的是**累计后复权因子**：baostock `backAdjustFactor`（事件表），与 tushare
   `adj_factor` 同量纲——40 只抽样在重叠期**逐位一致**（含多次分红股）
-- 训练一律**前复权、锚定窗口末根**（`bz_session._bars_payload`：窗口内
+- 训练一律**前复权、锚定窗口末根**（`dojo_session._bars_payload`：窗口内
   `factor/末根factor` 等比缩放），跨源追加不破坏比例：写入前在重叠日做锚定对齐
 - 增量时因子懒加载：`pre_close==昨收`（无除权）直接沿用末值，不拉事件表
 - **可靠性边界**：1993 起每个除权步长均通过经济自洽校验（`--check-factors` 全绿）；
@@ -214,17 +214,17 @@ CSS 变量 + 图表/画线 canvas 联动换肤，记忆在 localStorage。
 # 环境准备（本项目独立 venv）
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-.venv/bin/python bz_update.py --bootstrap            # 一次性：从零建库（全新克隆）
-.venv/bin/python bz_update.py --update               # 日常（cron 也跑这个）
-.venv/bin/python bz_update.py --validate --sample 40 # 抽样比对
-.venv/bin/python bz_update.py --check-factors        # 因子审计
+.venv/bin/python dojo_update.py --bootstrap            # 一次性：从零建库（全新克隆）
+.venv/bin/python dojo_update.py --update               # 日常（cron 也跑这个）
+.venv/bin/python dojo_update.py --validate --sample 40 # 抽样比对
+.venv/bin/python dojo_update.py --check-factors        # 因子审计
 ```
 
 ### 分钟线（本地挂接 astock；公开仓库不含数据）
 
 - **本地**：与姊妹项目 astock（A股回测系统，`../astock`）同机部署时**自动挂接**其分钟
   副本 `data/parquet/mins/{code}/{freq}.parquet`（tushare `stk_mins`，5/30min，约 5600 只
-  个股、起点 2015-01，ETF 无该源）；也可用环境变量 `BZ_MINS_ROOT` 指到任意同布局目录。
+  个股、起点 2015-01，ETF 无该源）；也可用环境变量 `DOJO_MINS_ROOT` 指到任意同布局目录。
   只读挂接、不写入。API：`GET /api/mins/coverage?code=600519`（可用周期与覆盖范围）、
   `GET /api/mins/kline?code=&freq=&start=&end=&limit=`（返回
   `[ts,o,h,l,c,v,amount,adj_factor]`）。
@@ -232,7 +232,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
   凭证私有）。其余全部功能不依赖分钟数据。想接分钟线：自行抓取任意来源（tushare
   `stk_mins` 需 token/积分，或 akshare 等），按上述目录布局放 parquet（列：
   `trade_time,open,high,low,close,volume,amount`，**不复权原始价**，volume 单位股、
-  amount 元），设 `BZ_MINS_ROOT` 即可。
+  amount 元），设 `DOJO_MINS_ROOT` 即可。
 - **复权口径（实证结论，000001/600519 全量比对）**：astock 分钟线是**不复权原始价**，
   与本项目日线同口径（开盘价逐位一致；tushare `adj_factor` 与 baostock
   `backAdjustFactor` 同量纲已另行验证）——服务端已按交易日把本项目日线的**累计后复权
@@ -247,11 +247,11 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ### 实时行情（自选列表 + 当前主图 K 线）
 
-- `bz_quote.py`：`http://qt.gtimg.cn/q=` 批量取当前价/昨收/开高低/成交量额/涨跌幅
+- `dojo_quote.py`：`http://qt.gtimg.cn/q=` 批量取当前价/昨收/开高低/成交量额/涨跌幅
   （GBK 解码），**进程内 TTL 缓存**——交易时段 30s、非交易时段 300s；上游失败用旧缓存兜底
 - `GET /api/market/quotes?codes=600519,000001`：返回 `{quotes, trading, asof}`，
   裸 6 位代码自动加 sh/sz/bj 前缀；前端自选列表每 60s 批量拉一次（单次最多 80 只）
-- **盘中 K 线**：`bz_live.py` 只服务「当前正在看的标的」，不批量拉全部自选：
+- **盘中 K 线**：`dojo_live.py` 只服务「当前正在看的标的」，不批量拉全部自选：
   - 日线最后一根：`GET /api/market/live?code=600519`（腾讯快照，含今日 OHLC/量）；
     指数板 `GET /api/index/live?key=sh000300`（A 股指数；海外指数暂不盘中）
   - 5/30 分钟：`GET /api/market/live?code=600519&freq=5m|30m`（新浪分钟 K，含当天
@@ -267,7 +267,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 **自动更新（cron，收盘后跑）**：
 
 ```cron
-30 1 * * 2-6  cd /path/to/kline-dojo && .venv/bin/python bz_update.py --update >> data/update.log 2>&1
+30 1 * * 2-6  cd /path/to/kline-dojo && .venv/bin/python dojo_update.py --update >> data/update.log 2>&1
 ```
 
 已知口径差异（baostock vs tushare）：名称变更时间线 baostock 无（bootstrap 建库的
@@ -298,12 +298,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ```
 server.py        标准库 HTTP 服务：静态 + /api/new|reveal|finish|stats + /api/search + /api/index/* + /api/market/* + /api/mins/* + /api/results|replay* + --selftest
-bz_data.py       行情 parquet 只读层（数据根自动探测）+ 自选搜索（search/normalize_code/kind_of）
-bz_update.py     baostock 行情更新器：--bootstrap 从零建库/增量/新股回补/复权因子/涨跌停计算/抽样比对
-bz_session.py    会话生成：stock/etf/limit/custom/index 五品类 + 定窗 + 费率/成交模式透传
-bz_index.py      指数缓存：腾讯/Yahoo 混合源、全历史翻页回填、增量刷新、parquet 存储
-bz_quote.py      实时行情：腾讯 qt.gtimg.cn 批量报价 + 进程内 TTL 缓存（自选列表用）
-bz_live.py       盘中实时 K 线：腾讯快照（日线末根）+ 新浪分钟 K（5/30 分），只读不落盘
+dojo_data.py       行情 parquet 只读层（数据根自动探测）+ 自选搜索（search/normalize_code/kind_of）
+dojo_update.py     baostock 行情更新器：--bootstrap 从零建库/增量/新股回补/复权因子/涨跌停计算/抽样比对
+dojo_session.py    会话生成：stock/etf/limit/custom/index 五品类 + 定窗 + 费率/成交模式透传
+dojo_index.py      指数缓存：腾讯/Yahoo 混合源、全历史翻页回填、增量刷新、parquet 存储
+dojo_quote.py      实时行情：腾讯 qt.gtimg.cn 批量报价 + 进程内 TTL 缓存（自选列表用）
+dojo_live.py       盘中实时 K 线：腾讯快照（日线末根）+ 新浪分钟 K（5/30 分），只读不落盘
 web/             前端（无构建步骤）：
   theme.js       四主题（暗黑/明亮/白蓝/深蓝）+ 图表换肤通知
   ind.js         指标纯函数：MA/BOLL/MACD/KDJ + 日周月年聚合 + 简化缠论
@@ -318,5 +318,5 @@ data/index/*.parquet 指数日线缓存（18 个；A股 11 个 baostock 增量�
 ## v2 备选
 
 自动卖出/止损止盈、分仓多标的、分钟线回放（数据源已就绪：本地自动挂接 astock 分钟
-副本或自备 `BZ_MINS_ROOT`，见「分钟线」小节）、看板加行业/概念指数、画线拖拽编辑、
+副本或自备 `DOJO_MINS_ROOT`，见「分钟线」小节）、看板加行业/概念指数、画线拖拽编辑、
 训练画线按会话持久化。

@@ -14,7 +14,7 @@ data/.update.lock
 # 个人训练成绩（含本机标的偏好，不入库）
 data/results.jsonl
 
-# 行情自有副本（~1.2GB，由 bz_update.py --bootstrap 用 baostock 从零再生，不入库）
+# 行情自有副本（~1.2GB，由 dojo_update.py --bootstrap 用 baostock 从零再生，不入库）
 data/market/
 
 # 指数缓存：体积 ~4MB、可再生（首次打开自动回填）。

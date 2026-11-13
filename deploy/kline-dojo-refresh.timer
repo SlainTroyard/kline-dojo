@@ -1,6 +1,6 @@
 # 每天 01:30 增量刷新指数缓存（页面的"⟳ 同步数据"仍可随时手动用）
 [Unit]
-Description=Run baozhu index refresh daily
+Description=Run KLineDojo index refresh daily
 
 [Timer]
 OnCalendar=*-*-* 01:30:00

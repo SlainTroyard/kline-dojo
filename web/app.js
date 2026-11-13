@@ -1,6 +1,6 @@
 /* K线道场 KLineDojo · 训练与复盘引擎（v1.3）
  * 回放控制 + 模拟撮合引擎（T+1 / 涨跌停拒单 / 整手 / 可配费率 / 当根收盘或次日开盘成交）
- * + 训练图表周期(日周月年)与指标(MA/BOLL/MACD/KDJ/VOL/筹码/缠论，基于 BzChartKit 共享工作台)
+ * + 训练图表周期(日周月年)与指标(MA/BOLL/MACD/KDJ/VOL/筹码/缠论，基于 DojoChartKit 共享工作台)
  * 双盲：训练期只见匿名 bars（时间轴隐藏），身份由 /api/reveal 在结束后揭晓。
  */
 'use strict';
@@ -51,12 +51,12 @@
   let revealChart = null, revealInfo = null;
   let replayViewChart = null, lastReplayData = null;
 
-  let wb = null;           // BzChartKit 工作台实例
+  let wb = null;           // DojoChartKit 工作台实例
   let maMenuCtrl = null, drawStyleCtrl = null;
   let trainThemeDirty = false;
 
-  let trainPeriod = localStorage.getItem('bz_train_period') || 'D';
-  const tToggles = window.BzChartKit.loadToggles('bz_train_toggles');
+  let trainPeriod = localStorage.getItem('dojo_train_period') || 'D';
+  const tToggles = window.DojoChartKit.loadToggles('dojo_train_toggles');
   const selectedCodes = new Map();  // 本局自选标的 code → name
 
   const CAT_NAMES = { stock: '个股', limit: '涨停起爆', etf: 'ETF', index: '指数', custom: '自选' };
@@ -111,7 +111,7 @@
   function atLimitDown(b) { return b.down != null && b.c <= b.down + 0.001; }
 
   function execBuy(n, price, fill) {
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     const amount = n * price;
     const fee = buyFee(amount);
     cash -= amount + fee;
@@ -129,7 +129,7 @@
   }
 
   function execSell(n, price, fill) {
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     const amount = n * price;
     const fee = sellFee(amount);
     const avg = pos.costBasis / pos.shares;
@@ -219,7 +219,7 @@
     pendingOrders = [];
   }
 
-  /* ---------------- 训练图表工作台（复用 BzChartKit） ---------------- */
+  /* ---------------- 训练图表工作台（复用 DojoChartKit） ---------------- */
   function syncTrainDrawBtns() {
     if (!wb || !wb.overlay) return;
     const mode = wb.overlay.mode, sticky = !!wb.overlay.sticky;
@@ -234,7 +234,7 @@
 
   function buildTrainChart() {
     if (!wb) {
-      wb = window.BzChartKit.createWorkbench({
+      wb = window.DojoChartKit.createWorkbench({
         ids: {
           chart: 'chart',
           paneMain: 'train-pane-main',
@@ -258,7 +258,7 @@
       });
     }
     const { chart, overlay } = wb.build();
-    window.__bzTrain = { chart, overlay };
+    window.__dojoTrain = { chart, overlay };
     applyTrainToggles(true);
   }
 
@@ -285,7 +285,7 @@
     wb.renderBars(bars, tToggles, false);
 
     // 买卖标记吸附到所属周期 bar
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     const mk = markers.map((m) => {
       const i = Math.round((m.time - FAKE_T0) / 86400);
       const k = aggIndexOf(S.bars[i] ? S.bars[i].d : fakeDate(i));
@@ -310,7 +310,7 @@
     document.querySelectorAll('[data-tt]').forEach((b) => {
       b.classList.toggle('on', !!tToggles[b.dataset.tt]);
     });
-    localStorage.setItem('bz_train_toggles', JSON.stringify(tToggles));
+    localStorage.setItem('dojo_train_toggles', JSON.stringify(tToggles));
     if (!skipRender) renderTrainChart();
   }
 
@@ -584,7 +584,7 @@
     $('trades-table').innerHTML = rows;
 
     // 绘制结算净值对比曲线
-    window.BzChartKit.drawEquityCurve(
+    window.DojoChartKit.drawEquityCurve(
       $('equity-chart'),
       equityCurve,
       S.bars,
@@ -627,7 +627,7 @@
   function renderRevealChart() {
     if (!revealInfo) return;
     const info = revealInfo;
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     if (revealChart) { revealChart.remove(); revealChart = null; }
     revealChart = LightweightCharts.createChart($('reveal-chart'), {
       layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 12 },
@@ -776,7 +776,7 @@
 
   function renderReplayModalContent(d) {
     if (!d) return;
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     const boardName = { main: '主板', chinext: '创业板', star: '科创板', etf: 'ETF', index: '指数' }[d.board] || d.board;
     $('replay-identity').innerHTML =
       `<b>${d.name}</b> <span style="color:var(--dim)">${d.code} · ${boardName} · ${CAT_NAMES[d.category] || d.category}` +
@@ -837,7 +837,7 @@
       eqCanvas.classList.toggle('hidden', !hasEq);
       if (hasEq) {
         const cap = (d.params && d.params.capital) || r.capital || 100000;
-        window.BzChartKit.drawEquityCurve(eqCanvas, d.equity_curve, d.bars, d.history - 1, cap);
+        window.DojoChartKit.drawEquityCurve(eqCanvas, d.equity_curve, d.bars, d.history - 1, cap);
       }
     }
   }
@@ -851,7 +851,7 @@
     renderReplayModalContent(d);
   }
 
-  /* ---- 自选：搜索 / chips / 自选清单（统一接入 BzWatchlist） ---- */
+  /* ---- 自选：搜索 / chips / 自选清单（统一接入 DojoWatchlist） ---- */
   function selectCode(code, name) {
     if (selectedCodes.size >= 10 && !selectedCodes.has(code)) return toast('本局最多选 10 个');
     selectedCodes.set(code, name);
@@ -886,7 +886,7 @@
   function renderWatchlist() {
     const box = $('watch-list');
     box.innerHTML = '';
-    const wl = window.BzWatchlist.load();
+    const wl = window.DojoWatchlist.load();
     if (!wl.length) {
       box.innerHTML = '<span class="empty">还没有自选，搜索后会自动记住</span>';
       return;
@@ -911,7 +911,7 @@
       };
       el.querySelector('.rm').onclick = (e) => {
         e.stopPropagation();
-        window.BzWatchlist.remove(w.code);
+        window.DojoWatchlist.remove(w.code);
         selectedCodes.delete(w.code);
         renderWatchlist();
         renderChips();
@@ -946,7 +946,7 @@
     for (const it of items) {
       const el = document.createElement('div');
       el.className = 'search-item';
-      const inWatch = window.BzWatchlist.has(it.code);
+      const inWatch = window.DojoWatchlist.has(it.code);
       const left = document.createElement('span');
       left.textContent = it.name + ' ';
       const cd = document.createElement('span');
@@ -961,7 +961,7 @@
         el.appendChild(tag);
       }
       el.onclick = () => {
-        window.BzWatchlist.add(it.code, it.name);
+        window.DojoWatchlist.add(it.code, it.name);
         selectCode(it.code, it.name);
         $('p-search').value = '';
         box.classList.add('hidden');
@@ -987,15 +987,15 @@
   /* ---------------- 主题 ---------------- */
   function initTheme() {
     const sel = $('theme-sel');
-    for (const t of window.BzTheme.list()) {
+    for (const t of window.DojoTheme.list()) {
       const o = document.createElement('option');
       o.value = t.key;
       o.textContent = t.label;
       sel.appendChild(o);
     }
-    sel.value = window.BzTheme.get();
-    sel.onchange = () => window.BzTheme.apply(sel.value);
-    window.BzTheme.onChange(() => {
+    sel.value = window.DojoTheme.get();
+    sel.onchange = () => window.DojoTheme.apply(sel.value);
+    window.DojoTheme.onChange(() => {
       maMenuCtrl && maMenuCtrl.sync();
       if (wb && wb.chart && S && !$('app-train').classList.contains('hidden') &&
           !$('screen-train').classList.contains('hidden')) {
@@ -1004,14 +1004,14 @@
         trainThemeDirty = true;
       }
       if (S && !$('screen-result').classList.contains('hidden')) {
-        window.BzChartKit.drawEquityCurve($('equity-chart'), equityCurve, S.bars, S.history - 1, S.config.capital);
+        window.DojoChartKit.drawEquityCurve($('equity-chart'), equityCurve, S.bars, S.history - 1, S.config.capital);
       }
       if (revealChart && revealInfo) renderRevealChart();
       if (!$('replay-modal').classList.contains('hidden') && lastReplayData) {
         renderReplayModalContent(lastReplayData);
       }
     });
-    window.addEventListener('bz-tab-train', () => {
+    window.addEventListener('dojo-tab-train', () => {
       renderWatchlist();
       if (trainThemeDirty && wb && wb.chart && S && !$('screen-train').classList.contains('hidden')) {
         trainThemeDirty = false;
@@ -1063,7 +1063,7 @@
         return toast('自选模式：请先搜索并选择至少一个标的');
       }
       lastParams = collectParams();
-      localStorage.setItem('bz_params', JSON.stringify({
+      localStorage.setItem('dojo_params', JSON.stringify({
         ...lastParams, category: lastCategory,
         codes: lastCategory === 'custom' ? [...selectedCodes.entries()].map(([c, n]) => ({ code: c, name: n })) : null,
       }));
@@ -1084,7 +1084,7 @@
       b.classList.toggle('on', b.dataset.tp === trainPeriod);
       b.onclick = () => {
         trainPeriod = b.dataset.tp;
-        localStorage.setItem('bz_train_period', trainPeriod);
+        localStorage.setItem('dojo_train_period', trainPeriod);
         document.querySelectorAll('[data-tp]').forEach((x) => x.classList.toggle('on', x === b));
         renderTrainChart(true);
       };
@@ -1093,7 +1093,7 @@
       b.onclick = () => { tToggles[b.dataset.tt] = !tToggles[b.dataset.tt]; applyTrainToggles(); };
     });
 
-    maMenuCtrl = window.BzChartKit.buildMaMenu({
+    maMenuCtrl = window.DojoChartKit.buildMaMenu({
       btnEl: $('train-ma-btn'),
       menuEl: $('train-ma-menu'),
       getMaSel: () => tToggles.maSel,
@@ -1103,7 +1103,7 @@
       },
     });
 
-    drawStyleCtrl = window.BzChartKit.buildDrawStylePop({
+    drawStyleCtrl = window.DojoChartKit.buildDrawStylePop({
       btnEl: $('train-draw-style'),
       popEl: $('train-draw-style-pop'),
       getOverlay: () => wb && wb.overlay,
@@ -1120,8 +1120,8 @@
     $('train-redo').onclick = () => { wb && wb.overlay && wb.overlay.redo(); };
     $('train-clear-draw').onclick = () => { wb && wb.overlay && wb.overlay.clearAll(); };
 
-    window.BzChartKit.bindTemplates({
-      storageKey: 'bz_tpl_train',
+    window.DojoChartKit.bindTemplates({
+      storageKey: 'dojo_tpl_train',
       selEl: $('train-tpl-sel'),
       saveBtn: $('train-tpl-save'),
       delBtn: $('train-tpl-del'),
@@ -1129,7 +1129,7 @@
       onApply: (t) => {
         if (t.period) {
           trainPeriod = t.period;
-          localStorage.setItem('bz_train_period', trainPeriod);
+          localStorage.setItem('dojo_train_period', trainPeriod);
           document.querySelectorAll('[data-tp]').forEach((x) => x.classList.toggle('on', x.dataset.tp === trainPeriod));
         }
         Object.assign(tToggles, t.toggles || {});
@@ -1160,7 +1160,7 @@
     $('hist-close').onclick = () => $('hist-modal').classList.add('hidden');
     $('hist-modal').onclick = (e) => { if (e.target === $('hist-modal')) $('hist-modal').classList.add('hidden'); };
     $('hist-clear').onclick = () => {
-      window.bzPrompt('清空全部成绩与复盘不可恢复。输入「清空」确认：', '', (txt) => {
+      window.dojoPrompt('清空全部成绩与复盘不可恢复。输入「清空」确认：', '', (txt) => {
         if (txt !== '清空') return;
         api('/api/results/delete', { all: true })
           .then(() => { toast('已清空', true); loadStats(); $('hist-modal').classList.add('hidden'); })
@@ -1234,7 +1234,7 @@
     };
 
     try {
-      const saved = JSON.parse(localStorage.getItem('bz_params') || 'null');
+      const saved = JSON.parse(localStorage.getItem('dojo_params') || 'null');
       if (saved) {
         $('p-capital').value = saved.capital ?? 100000;
         $('p-history-all').checked = Number(saved.history ?? 120) === 0;
@@ -1268,7 +1268,7 @@
       }
     } catch { /* ignore */ }
 
-    window.BzWatchlist.onChange(() => renderWatchlist());
+    window.DojoWatchlist.onChange(() => renderWatchlist());
     renderChips();
     renderWatchlist();
     updateRulesTip();

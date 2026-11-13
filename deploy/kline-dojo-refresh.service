@@ -5,4 +5,4 @@ Description=KLineDojo index daily refresh
 [Service]
 Type=oneshot
 WorkingDirectory=/path/to/kline-dojo
-ExecStart=/path/to/kline-dojo/.venv/bin/python bz_index.py
+ExecStart=/path/to/kline-dojo/.venv/bin/python dojo_index.py

@@ -1,6 +1,6 @@
 """盘中实时 K 线（只读，不落盘）。
 
-日线最后一根：腾讯快照（qt.gtimg.cn）。字段与 bz_quote 同源，额外解析交易日期，
+日线最后一根：腾讯快照（qt.gtimg.cn）。字段与 dojo_quote 同源，额外解析交易日期，
 用于把「今天」这根临时 bar 接到历史日线末尾。
 5/30 分钟：新浪 K 线接口（OHLCV 完整，含当天尚未收盘的 bar）。
 
@@ -16,7 +16,7 @@ import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-import bz_quote
+import dojo_quote
 
 CST = timezone(timedelta(hours=8))
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -31,7 +31,7 @@ _mcache: dict[tuple[str, int], tuple[float, list]] = {}
 
 
 def _ttl() -> int:
-    return TTL_TRADING if bz_quote.trading_now() else TTL_IDLE
+    return TTL_TRADING if dojo_quote.trading_now() else TTL_IDLE
 
 
 def _get_bytes(url: str, timeout: int = 8) -> bytes:
@@ -97,7 +97,7 @@ def quote(symbol: str, is_index: bool = False) -> dict | None:
             "chg": _f(parts, 31),
             "pct": _f(parts, 32),
         }
-        q["trading"] = bool(bz_quote.trading_now() and
+        q["trading"] = bool(dojo_quote.trading_now() and
                             date == datetime.now(CST).strftime("%Y-%m-%d"))
         with _lock:
             _qcache[key] = (now, q)
@@ -146,7 +146,7 @@ def minute_bars(symbol: str, scale: int) -> dict:
         if hit and now - hit[0] <= _ttl():
             return {"symbol": symbol, "scale": scale, "bars": hit[1],
                     "asof": hit[1][-1][0] if hit[1] else "",
-                    "trading": bz_quote.trading_now()}
+                    "trading": dojo_quote.trading_now()}
     n = 120 if scale == 5 else 48
     url = ("https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_=/"
            f"CN_MarketDataService.getKLineData?symbol={symbol}&scale={scale}&ma=no&datalen={n}")
@@ -170,7 +170,7 @@ def minute_bars(symbol: str, scale: int) -> dict:
             _mcache[key] = (now, bars)
         last = bars[-1][0]
         return {"symbol": symbol, "scale": scale, "bars": bars, "asof": last,
-                "trading": bool(bz_quote.trading_now() and
+                "trading": bool(dojo_quote.trading_now() and
                                 last[:10] == datetime.now(CST).strftime("%Y-%m-%d"))}
     except Exception:                              # noqa: BLE001
         with _lock:

@@ -1,13 +1,13 @@
-/* 图表工作台公共套件 (BzChartKit) + 指数/行情看板引擎 (createBoard)
+/* 图表工作台公共套件 (DojoChartKit) + 指数/行情看板引擎 (createBoard)
  *
  * 架构说明：
- * 1. BzChartKit 统一封装训练页、指数看板、行情板共用的：
+ * 1. DojoChartKit 统一封装训练页、指数看板、行情板共用的：
  *    - 多面板图表创建与可视区间/十字光标联动（主图 + BOLL/VOL/MACD/KDJ 四副图）
  *    - O(1) 指标计算缓存（消除十字光标移动时的全量重算性能瓶颈）
  *    - 顶部等宽数字图例渲染（updateLegend）
  *    - 均线勾选菜单（buildMaMenu）、画线样式浮层及选中态回显（buildDrawStylePop）
  *    - 图表模板 CRUD（bindTemplates）与结算净值对比曲线绘制（drawEquityCurve）
- * 2. createBoard 基于 BzChartKit 实例化「指数看板 (View)」与「行情看板 (Mkt)」。
+ * 2. createBoard 基于 DojoChartKit 实例化「指数看板 (View)」与「行情看板 (Mkt)」。
  */
 'use strict';
 
@@ -16,7 +16,7 @@
  * 这样也避免浏览器时区不是 UTC+8 时整体偏移。 */
 const barTs = (s) => Math.floor(Date.parse(s.replace(' ', 'T') + 'Z') / 1000);
 
-window.BzChartKit = (() => {
+window.DojoChartKit = (() => {
   const AXIS_W = 62;
   const DRAW_COLORS = ['#f0b90b', '#e0483e', '#4a90e2', '#1fa06b', '#c77dff', '#e6ebf4'];
 
@@ -29,7 +29,7 @@ window.BzChartKit = (() => {
     try { obj = Object.assign(base, JSON.parse(localStorage.getItem(key) || '{}')); }
     catch { obj = base; }
     if (!Array.isArray(obj.maSel)) {
-      obj.maSel = obj.ma === false ? [] : window.BzTheme.MA_DEFAULT.slice();
+      obj.maSel = obj.ma === false ? [] : window.DojoTheme.MA_DEFAULT.slice();
     }
     delete obj.ma;
     return obj;
@@ -41,7 +41,7 @@ window.BzChartKit = (() => {
   /** 构建 MA 周期勾选浮层（训练/指数/行情三处共用） */
   function buildMaMenu({ btnEl, menuEl, getMaSel, onChange }) {
     if (!menuEl || !btnEl) return { sync() {} };
-    const MA_DEFS = window.BzTheme.MA_DEFS;
+    const MA_DEFS = window.DojoTheme.MA_DEFS;
     menuEl.textContent = '';
     for (const m of MA_DEFS) {
       const lab = document.createElement('label');
@@ -58,7 +58,7 @@ window.BzChartKit = (() => {
       };
       const dot = document.createElement('i');
       dot.dataset.ma = String(m.p);
-      dot.style.background = window.BzTheme.maColor(m.p, m.color);
+      dot.style.background = window.DojoTheme.maColor(m.p, m.color);
       lab.append(cb, dot, document.createTextNode(`MA${m.p}`));
       menuEl.appendChild(lab);
     }
@@ -83,7 +83,7 @@ window.BzChartKit = (() => {
         });
         menuEl.querySelectorAll('i[data-ma]').forEach((dot) => {
           const m = MA_DEFS.find((x) => String(x.p) === dot.dataset.ma);
-          if (m) dot.style.background = window.BzTheme.maColor(m.p, m.color);
+          if (m) dot.style.background = window.DojoTheme.maColor(m.p, m.color);
         });
       },
     };
@@ -171,7 +171,7 @@ window.BzChartKit = (() => {
     };
     refreshSel();
     saveBtn.onclick = () => {
-      window.bzPrompt('模板名称：', '', (name) => {
+      window.dojoPrompt('模板名称：', '', (name) => {
         name = (name || '').slice(0, 40);
         if (!name) return;
         const m = loadMap();
@@ -213,7 +213,7 @@ window.BzChartKit = (() => {
     const ids = opts.ids;
     const rightOffset = opts.rightOffset || 6;
     const timeOf = opts.timeOf || ((b) => (b.t != null ? b.t : b.d));
-    const MA_DEFS = window.BzTheme.MA_DEFS;
+    const MA_DEFS = window.DojoTheme.MA_DEFS;
 
     let chart = null, candle = null;
     let bollChart = null, volChart = null, macdChart = null, kdjChart = null;
@@ -225,7 +225,7 @@ window.BzChartKit = (() => {
     let indCache = { timeIdxMap: new Map(), ma: {}, boll: null, macd: null, kdj: null };
 
     function mkSubPane(elId) {
-      const T = window.BzTheme.colors();
+      const T = window.DojoTheme.colors();
       return LightweightCharts.createChart(document.getElementById(elId), {
         layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 10 },
         grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
@@ -245,7 +245,7 @@ window.BzChartKit = (() => {
         if (c) c.remove();
       }
       chart = bollChart = volChart = macdChart = kdjChart = null;
-      const T = window.BzTheme.colors();
+      const T = window.DojoTheme.colors();
 
       chart = LightweightCharts.createChart(document.getElementById(ids.chart), {
         layout: { background: { color: T.panel }, textColor: T.dim, fontSize: 12 },
@@ -265,7 +265,7 @@ window.BzChartKit = (() => {
       maS = {};
       for (const m of MA_DEFS) {
         maS[m.p] = chart.addLineSeries({
-          color: window.BzTheme.maColor(m.p, m.color), lineWidth: 1,
+          color: window.DojoTheme.maColor(m.p, m.color), lineWidth: 1,
           priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
         });
       }
@@ -386,7 +386,7 @@ window.BzChartKit = (() => {
       }
 
       if (tg.macd && curBars.length) {
-        const T = window.BzTheme.colors();
+        const T = window.DojoTheme.colors();
         mc = window.Ind.macd(closes);
         macdS.hist.setData(mc.hist.map((v, i) => ({
           time: timeOf(curBars[i]), value: v, color: v >= 0 ? T.macdUp : T.macdDown,
@@ -434,7 +434,7 @@ window.BzChartKit = (() => {
       const el = document.getElementById(ids.legend);
       if (!el) return;
       if (!curBars.length || !curToggles) { el.textContent = ''; return; }
-      const T = window.BzTheme.colors();
+      const T = window.DojoTheme.colors();
       const tg = curToggles;
       let idx = curBars.length - 1;
       if (param && param.time != null && indCache.timeIdxMap) {
@@ -458,7 +458,7 @@ window.BzChartKit = (() => {
           const arr = indCache.ma[m.p];
           const v = arr ? arr[idx] : null;
           if (v == null) return '';
-          const col = window.BzTheme.maColor(m.p, m.color);
+          const col = window.DojoTheme.maColor(m.p, m.color);
           return `<span style="color:${col}">MA${m.p}</span> <b>${v.toFixed(1)}</b>`;
         }).filter(Boolean);
         if (maParts.length) html += `<span class="lg" style="color:${T.dim}">${maParts.join(' ')}</span>`;
@@ -524,7 +524,7 @@ window.BzChartKit = (() => {
     /** 灌入完整 bars 数据（K线+成交量+副图指标+缠论+筹码） */
     function renderBars(bars, toggles, minute = false) {
       if (!chart) return;
-      const T = window.BzTheme.colors();
+      const T = window.DojoTheme.colors();
       curBars = bars || [];
       curToggles = toggles || curToggles || {};
       candle.setData(curBars.map((b) => ({ time: timeOf(b), open: b.o, high: b.h, low: b.l, close: b.c })));
@@ -598,7 +598,7 @@ window.BzChartKit = (() => {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     const closeAt = (idx) => {
       const b = bars[Math.max(0, Math.min(bars.length - 1, idx))];
       return Array.isArray(b) ? b[3] : b.c;
@@ -706,7 +706,7 @@ window.createBoard = function createBoard(cfg) {
   const P = cfg.mode === 'market' ? 'mkt' : 'view';
   const root = document.getElementById(P === 'mkt' ? 'screen-mkt' : 'screen-view');
   const $ = (suf) => document.getElementById(P + '-' + suf);
-  const lsKey = (k) => 'bz_' + P + '_' + k;
+  const lsKey = (k) => 'dojo_' + P + '_' + k;
 
   let inited = false;
   let wb = null;
@@ -720,7 +720,7 @@ window.createBoard = function createBoard(cfg) {
   let asof = '';
   let liveTimer = null, liveBusy = false;
   const LIVE_MS = 20000;
-  const toggles = window.BzChartKit.loadToggles(lsKey('toggles'));
+  const toggles = window.DojoChartKit.loadToggles(lsKey('toggles'));
 
   /* ---------------- 小地图：全历史缩略条 ---------------- */
   class Minimap {
@@ -764,7 +764,7 @@ window.createBoard = function createBoard(cfg) {
       ctx.clearRect(0, 0, w, h);
       const n = this.bars.length;
       if (!n || !this.chart) return;
-      const T = window.BzTheme.colors();
+      const T = window.DojoTheme.colors();
       const tsW = this.chart.timeScale().width() || Math.max(1, w - 62);
       let lo = Infinity, hi = -Infinity;
       for (const b of this.bars) { if (b.c < lo) lo = b.c; if (b.c > hi) hi = b.c; }
@@ -813,7 +813,7 @@ window.createBoard = function createBoard(cfg) {
   function buildChart() {
     if (!minimap) minimap = new Minimap();
     if (!wb) {
-      wb = window.BzChartKit.createWorkbench({
+      wb = window.DojoChartKit.createWorkbench({
         ids: {
           chart: P + '-chart',
           paneMain: P + '-pane-main',
@@ -840,7 +840,7 @@ window.createBoard = function createBoard(cfg) {
     }
     const { chart, overlay } = wb.build();
     minimap.attach(chart);
-    window.__bzView = { chart, overlay, minimap };
+    window.__dojoView = { chart, overlay, minimap };
     applyToggles();
   }
 
@@ -1007,7 +1007,7 @@ window.createBoard = function createBoard(cfg) {
 
   async function loadList() {
     if (cfg.mode === 'market') {
-      const wl = window.BzWatchlist.load();
+      const wl = window.DojoWatchlist.load();
       insts = wl.map((w) => ({ key: w.code, name: w.name, group: '自选' }));
       renderList();
       refreshQuotes();
@@ -1056,7 +1056,7 @@ window.createBoard = function createBoard(cfg) {
           for (const h of hits.slice(0, 30)) {
             mk(
               { key: h.code, name: `${h.name} ${h.code}` },
-              window.BzWatchlist.has(h.code) ? '✓' : '＋'
+              window.DojoWatchlist.has(h.code) ? '✓' : '＋'
             );
           }
         }).catch(() => {});
@@ -1090,7 +1090,7 @@ window.createBoard = function createBoard(cfg) {
 
   async function refreshQuotes() {
     if (cfg.mode !== 'market' || root.classList.contains('hidden')) return;
-    const codes = window.BzWatchlist.load().map((w) => w.code).slice(0, 80);
+    const codes = window.DojoWatchlist.load().map((w) => w.code).slice(0, 80);
     if (!codes.length) return;
     try {
       const d = await fetch('/api/market/quotes?codes=' + codes.join(',')).then((r) => r.json());
@@ -1116,7 +1116,7 @@ window.createBoard = function createBoard(cfg) {
   }
 
   function removeFromWatchlist(code) {
-    window.BzWatchlist.remove(code);
+    window.DojoWatchlist.remove(code);
     loadList();
     if (code === curKey) {
       if (insts.length) select(insts[0].key);
@@ -1135,7 +1135,7 @@ window.createBoard = function createBoard(cfg) {
 
   function addToWatchlist(it) {
     const code = it.key;
-    window.BzWatchlist.add(code, it.name);
+    window.DojoWatchlist.add(code, it.name);
     const s = $('search');
     if (s.value) s.value = '';
     loadList();
@@ -1254,7 +1254,7 @@ window.createBoard = function createBoard(cfg) {
       };
     });
 
-    maMenuCtrl = window.BzChartKit.buildMaMenu({
+    maMenuCtrl = window.DojoChartKit.buildMaMenu({
       btnEl: $('ma-btn'),
       menuEl: $('ma-menu'),
       getMaSel: () => toggles.maSel,
@@ -1265,7 +1265,7 @@ window.createBoard = function createBoard(cfg) {
       },
     });
 
-    drawStyleCtrl = window.BzChartKit.buildDrawStylePop({
+    drawStyleCtrl = window.DojoChartKit.buildDrawStylePop({
       btnEl: $('draw-style'),
       popEl: $('draw-style-pop'),
       getOverlay: () => wb && wb.overlay,
@@ -1285,8 +1285,8 @@ window.createBoard = function createBoard(cfg) {
     if ($('refresh')) $('refresh').onclick = refreshData;
     $('search').oninput = renderList;
 
-    window.BzChartKit.bindTemplates({
-      storageKey: 'bz_tpl_' + P,
+    window.DojoChartKit.bindTemplates({
+      storageKey: 'dojo_tpl_' + P,
       selEl: $('tpl-sel'),
       saveBtn: $('tpl-save'),
       delBtn: $('tpl-del'),
@@ -1335,7 +1335,7 @@ window.createBoard = function createBoard(cfg) {
     bind();
     if (cfg.mode === 'market') {
       setInterval(refreshQuotes, 60 * 1000);
-      window.BzWatchlist.onChange(() => {
+      window.DojoWatchlist.onChange(() => {
         if (!root.classList.contains('hidden')) loadList();
       });
     }
@@ -1346,7 +1346,7 @@ window.createBoard = function createBoard(cfg) {
         startLive();
       }
     });
-    window.BzTheme.onChange(() => {
+    window.DojoTheme.onChange(() => {
       if (!inited) return;
       maMenuCtrl && maMenuCtrl.sync();
       if (wb && wb.chart) {
@@ -1364,7 +1364,7 @@ window.View = window.createBoard({ mode: 'index' });
 window.Mkt = window.createBoard({ mode: 'market' });
 
 /* ---------------- 三页签导航（训练 / 指数看板 / 行情） ---------------- */
-window.bzNav = {
+window.dojoNav = {
   switch(which) {
     document.getElementById('app-train').classList.toggle('hidden', which !== 'train');
     document.getElementById('screen-view').classList.toggle('hidden', which !== 'view');
@@ -1374,9 +1374,9 @@ window.bzNav = {
     }
     if (which === 'view' && window.View) window.View.enter();
     if (which === 'mkt' && window.Mkt) window.Mkt.enter();
-    if (which === 'train') window.dispatchEvent(new Event('bz-tab-train'));
+    if (which === 'train') window.dispatchEvent(new Event('dojo-tab-train'));
   },
 };
 for (const w of ['train', 'view', 'mkt']) {
-  document.getElementById('nav-' + w).onclick = () => window.bzNav.switch(w);
+  document.getElementById('nav-' + w).onclick = () => window.dojoNav.switch(w);
 }

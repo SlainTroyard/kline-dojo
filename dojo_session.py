@@ -10,7 +10,7 @@
   etf     全市场 ETF 随机窗口
   limit   涨停起爆——窗口内"最后一根可见历史 bar"强制为涨停日
   custom  自选：params.codes 里随机抽一个（个股/ETF 均可）
-  index   指数：params.index_key 指定或 18 个指数随机（数据来自 bz_index 缓存）
+  index   指数：params.index_key 指定或 18 个指数随机（数据来自 dojo_index 缓存）
 
 date_from/date_to 语义（训练期）：训练推进从 date_from 起的首个交易日开始，
 到 date_to 止（空 = 数据末尾）；前置可见历史自动从 date_from 往前取 history 根。
@@ -28,8 +28,8 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-import bz_data
-import bz_index
+import dojo_data
+import dojo_index
 
 DEFAULTS = {
     "history": 120,        # 前置可见历史根数；0 = 全部（训练前所有 bars）
@@ -58,10 +58,10 @@ MIN_HIST, MIN_FWD = 40, 40 # 定窗最少前置历史 / 训练根数
 
 def _st_at(code: str, d0) -> bool:
     """时点 ST 判定：优先 baostock is_st 列，回退名称含 ST/退。"""
-    v = bz_data.is_st_at(code, d0)
+    v = dojo_data.is_st_at(code, d0)
     if v is not None:
         return v
-    nm = bz_data.name_asof(code, d0)
+    nm = dojo_data.name_asof(code, d0)
     return bool(nm and ("ST" in nm.upper() or "退" in nm))
 
 
@@ -115,13 +115,13 @@ def normalize_params(raw: dict) -> dict:
             p["codes"] = [c for c in p["codes"].replace(",", " ").split() if c]
         seen, out = set(), []
         for c in p["codes"][:50]:
-            nc = bz_data.normalize_code(c)
+            nc = dojo_data.normalize_code(c)
             if nc and nc not in seen:
                 seen.add(nc)
                 out.append(nc)
         p["codes"] = out
     if p["index_key"] is not None:
-        if p["index_key"] not in bz_index.BY_KEY:
+        if p["index_key"] not in dojo_index.BY_KEY:
             raise ValueError(f"未知指数 {p['index_key']}")
     return p
 
@@ -161,7 +161,7 @@ def _feasible_ends(df: pd.DataFrame, p: dict, code: str, need_limit: bool,
     # 锚点年份 + 上市年限
     year0 = dates.dt.year.to_numpy()[anchor]
     ok = (year0 >= p["year_from"]) & (year0 <= p["year_to"])
-    ld = bz_data.list_date(code)
+    ld = dojo_data.list_date(code)
     if ld is not None:
         ok &= (dates.to_numpy()[anchor] >= np.datetime64(ld + timedelta(days=int(p["min_list_years"] * 365.25))))
 
@@ -286,7 +286,7 @@ def _random_window_session(category: str, p: dict, df: pd.DataFrame, code: str,
             continue
         p["_hist"], p["_fwd"] = i0 - s, p["forward"]
         public = _public_payload(category, p, bars, board, kind == "etfs")
-        name = bz_data.name_asof(code, df["date"].iloc[e]) or code
+        name = dojo_data.name_asof(code, df["date"].iloc[e]) or code
         secret = {
             "code": code, "name": name, "board": board, "category": category,
             "start_date": dates[0], "end_date": dates[-1], "dates": dates,
@@ -309,8 +309,8 @@ def new_session(category: str, raw_params: dict) -> tuple[dict, dict]:
             raise ValueError("自选模式需要至少一个有效代码")
         rng = random.SystemRandom()
         code = rng.choice(p["codes"])
-        kind = bz_data.kind_of(code)
-        df = bz_data.daily(kind, code)
+        kind = dojo_data.kind_of(code)
+        df = dojo_data.daily(kind, code)
         if not len(df):
             raise RuntimeError(f"{code} 无日线数据")
         board = board_of(code, kind)
@@ -324,7 +324,7 @@ def new_session(category: str, raw_params: dict) -> tuple[dict, dict]:
             public = _public_payload(category, p, bars, board, kind == "etfs")
         else:
             return _random_window_session(category, p, df, code, kind, board, need_limit=False)
-        name = bz_data.name_asof(code, df["date"].iloc[e]) or code
+        name = dojo_data.name_asof(code, df["date"].iloc[e]) or code
         secret = {
             "code": code, "name": name, "board": board, "category": category,
             "start_date": dates[0], "end_date": dates[-1], "dates": dates,
@@ -335,11 +335,11 @@ def new_session(category: str, raw_params: dict) -> tuple[dict, dict]:
     # ---- stock / etf / limit：全市场随机 ----
     kind = "etfs" if category == "etf" else "stocks"
     need_limit = category == "limit"
-    pool = list(bz_data.codes(kind))
+    pool = list(dojo_data.codes(kind))
     # 老年份窗口：候选池限定当年已上市的标的（否则随机抽样几乎不可能命中老股）
     era = pd.Timestamp(f"{p['year_to']}-12-31") if not p["date_from"] else None
     if era is not None:
-        inst = bz_data.instruments()
+        inst = dojo_data.instruments()
         ok = set(inst[(inst["code"].isin(pool)) &
                       (inst["list_date"].isna() | (inst["list_date"] <= era))]["code"])
         filtered = [c for c in pool if c in ok]
@@ -350,7 +350,7 @@ def new_session(category: str, raw_params: dict) -> tuple[dict, dict]:
 
     last_err = "没有符合条件的标的"
     for code in pool[:400]:
-        df = bz_data.daily(kind, code)
+        df = dojo_data.daily(kind, code)
         if p["date_from"]:
             try:
                 s, e = _fixed_window(df, p, need_limit)
@@ -367,7 +367,7 @@ def new_session(category: str, raw_params: dict) -> tuple[dict, dict]:
             p["_hist"], p["_fwd"] = i0 - s, e - i0 + 1
             board = board_of(code, kind)
             public = _public_payload(category, p, bars, board, kind == "etfs")
-            name = bz_data.name_asof(code, df["date"].iloc[e]) or code
+            name = dojo_data.name_asof(code, df["date"].iloc[e]) or code
             secret = {
                 "code": code, "name": name, "board": board, "category": category,
                 "start_date": dates[0], "end_date": dates[-1], "dates": dates,
@@ -388,7 +388,7 @@ def new_session(category: str, raw_params: dict) -> tuple[dict, dict]:
             board = board_of(code, kind)
             p["_hist"], p["_fwd"] = i0 - s, p["forward"]
             public = _public_payload(category, p, bars, board, kind == "etfs")
-            name = bz_data.name_asof(code, df["date"].iloc[e]) or code
+            name = dojo_data.name_asof(code, df["date"].iloc[e]) or code
             secret = {
                 "code": code, "name": name, "board": board, "category": category,
                 "start_date": dates[0], "end_date": dates[-1], "dates": dates,
@@ -406,10 +406,10 @@ def _first_train_idx(df: pd.DataFrame, p: dict) -> int:
 
 def _index_df(key: str) -> pd.DataFrame:
     """指数缓存 → serving 同构 DataFrame（adj=1、涨跌停 NaN）。"""
-    df = bz_index.load(key)
+    df = dojo_index.load(key)
     if df is None or not len(df):
-        bz_index.refresh(key)
-        df = bz_index.load(key)
+        dojo_index.refresh(key)
+        df = dojo_index.load(key)
     if df is None or not len(df):
         raise RuntimeError(f"指数 {key} 无缓存数据，请先在看板点「同步数据」")
     out = pd.DataFrame({
@@ -429,12 +429,12 @@ def _new_index_session(p: dict) -> tuple[dict, dict]:
     if p["index_key"]:
         keys = [p["index_key"]]
     else:
-        keys = list(bz_index.BY_KEY)
+        keys = list(dojo_index.BY_KEY)
         rng.shuffle(keys)
 
     last_err = "没有可用指数"
     for key in keys:
-        meta = bz_index.BY_KEY[key]
+        meta = dojo_index.BY_KEY[key]
         try:
             df = _index_df(key)
             if p["date_from"]:

@@ -159,7 +159,7 @@ window.ChipProfile = class ChipProfile {
     for (let k = 0; k < BINS; k++) if (bins[k] > mx) { mx = bins[k]; pocK = k; }
     if (!(mx > 0)) return;
 
-    const T = window.BzTheme.colors();
+    const T = window.DojoTheme.colors();
     const close = this.bars[i1].c;
     const padX = 3;                        // 左缘（贴 K 线侧）
     const padR = 8;                        // 右缘空隙：不顶到价格轴

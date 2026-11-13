@@ -18,14 +18,14 @@ schema（个股/ETF）：serving 10 列 + amount(成交额,元) + turnover_rate(
 append-only 合流：成交量按 股→手 除以 100，价格实测两源一致；海外指数仍走腾讯/Yahoo）。
 
 用法（用本项目 venv）：
-    .venv/bin/python bz_update.py --bootstrap              # 从零建库（含退市股，单进程过夜，可中断续传）
-    .venv/bin/python bz_update.py --bootstrap --codes 600519,510300  # 只建指定标的（快试用）
-    .venv/bin/python bz_update.py --update                 # 增量 + 新股 + 指数
-    .venv/bin/python bz_update.py --update --codes 600519,300750
-    .venv/bin/python bz_update.py --backfill 301999        # 单标的全量回补（可强行重拉）
-    .venv/bin/python bz_update.py --extend-back            # 回补既有副本 2015 以前历史（单进程，较慢）
-    .venv/bin/python bz_update.py --extend-back --codes 000001,600519
-    .venv/bin/python bz_update.py --validate --sample 30   # 与既有数据抽样比对
+    .venv/bin/python dojo_update.py --bootstrap              # 从零建库（含退市股，单进程过夜，可中断续传）
+    .venv/bin/python dojo_update.py --bootstrap --codes 600519,510300  # 只建指定标的（快试用）
+    .venv/bin/python dojo_update.py --update                 # 增量 + 新股 + 指数
+    .venv/bin/python dojo_update.py --update --codes 600519,300750
+    .venv/bin/python dojo_update.py --backfill 301999        # 单标的全量回补（可强行重拉）
+    .venv/bin/python dojo_update.py --extend-back            # 回补既有副本 2015 以前历史（单进程，较慢）
+    .venv/bin/python dojo_update.py --extend-back --codes 000001,600519
+    .venv/bin/python dojo_update.py --validate --sample 30   # 与既有数据抽样比对
 
 抓取一律单进程串行 + 限速（baostock 会拉黑并发/高频 IP，绝不用多进程）。
 """
@@ -44,7 +44,7 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
-MARKET = Path(os.environ.get("BZ_MARKET_ROOT") or ROOT / "data" / "market")
+MARKET = Path(os.environ.get("DOJO_MARKET_ROOT") or os.environ.get("BZ_MARKET_ROOT") or ROOT / "data" / "market")
 INDEX_DIR = ROOT / "data" / "index"
 LOCK = ROOT / "data" / ".update.lock"
 
@@ -899,7 +899,7 @@ def main():
 
     if not MARKET.exists() and not args.bootstrap:
         sys.exit("未找到 data/market —— 全新部署请先跑 "
-                 "`.venv/bin/python bz_update.py --bootstrap`（详见 README）")
+                 "`.venv/bin/python dojo_update.py --bootstrap`（详见 README）")
     if not acquire_lock():
         sys.exit("已有更新任务在运行（data/.update.lock）")
 
